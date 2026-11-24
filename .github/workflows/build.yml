@@ -9,7 +9,7 @@ on:
       target_select:
         description: "選擇機型 (Target Model)"
         required: true
-        default: 'TL_C2-V1'
+        default: 'TL_MR3020-V3'
         type: choice
         options:
           # 5K
@@ -173,7 +173,7 @@ on:
         description: "WebUI 語言設定 (Custom Language Selector)"
         required: true
         type: choice
-        default: 'English_Only'
+        default: 'RU (Pусский)'
         options:
           - English_Only
           - CN (繁體中文)
@@ -287,7 +287,7 @@ jobs:
       - name: Generate build.config & Apply Nano
         run: |
           TNAME="${{ inputs.target_select }}"
-          [ -z "$TNAME" ] && TNAME="TL_C2-V1"
+          [ -z "$TNAME" ] && TNAME="TL_MR3020-V3"
           echo "::group::Template Search & Config Gen"
           
           TEMPLATE_DIR="padavan-ng/trunk/configs/templates"
@@ -296,8 +296,8 @@ jobs:
           TARGET_FILE=$(find "$TEMPLATE_DIR" -maxdepth 2 \( -iname "${PATTERN_A}.config" -o -iname "${PATTERN_B}.config" \) | head -n 1)
           
           if [ -z "$TARGET_FILE" ]; then
-            echo "::warning:: Template not found, using fallback..."
-            TARGET_FILE="padavan-ng/trunk/configs/templates/tplink/tl_c2-v1.config"
+            echo "::error:: Template not found for $TNAME; refusing to build a different router model"
+            exit 1
           fi
           
           if [ ! -f "$TARGET_FILE" ]; then
@@ -1809,59 +1809,32 @@ jobs:
           echo "::endgroup::"
 
       - name: 🌐 Custom Language Selector
+        env:
+          SELECTED_LANG_OPTION: ${{ inputs.language_select }}
         run: |
           echo "::group::Setting up WebUI Language"
-          
-          SELECTED_LANG_OPTION="${{ inputs.language_select }}"
-          TARGET_BOARD="${{ inputs.target_select }}"
-          TEMPLATES_DIR="padavan-ng/trunk/configs/templates"
-          
-          # 判斷並匯出 Release 用語言標籤變數
-          if [ "$SELECTED_LANG_OPTION" == "English_Only" ]; then
-            LANG_CODE="NONE"
-            echo "RELEASE_LANG=English Only" >> $GITHUB_ENV
-          else
-            LANG_CODE=$(echo "$SELECTED_LANG_OPTION" | cut -d' ' -f1)
-            echo "RELEASE_LANG=English + $SELECTED_LANG_OPTION" >> $GITHUB_ENV
-          fi
-          
-          echo "🎯 Target Board: $TARGET_BOARD"
-          echo "🗣️ Selected Language Code: $LANG_CODE"
-          
-          CONFIG_PATH=$(find "$TEMPLATES_DIR" -type f -name "*.config" | grep -i "$TARGET_BOARD.config" | head -n 1)
-          
-          if [ -z "$CONFIG_PATH" ]; then
-             echo "⚠️ Config not found via strict match, trying loose search..."
-             CONFIG_PATH=$(find "$TEMPLATES_DIR" -type f -name "*.config" | grep -i "$TARGET_BOARD" | head -n 1)
-          fi
-          
-          if [ -f "$CONFIG_PATH" ]; then
-            echo "📝 Modifying Config: $CONFIG_PATH"
-            sed -i 's/^CONFIG_FIRMWARE_INCLUDE_LANG_.*=y/#&/' "$CONFIG_PATH"
-            echo "✅ All non-English languages disabled."
-            
-            if [ "$LANG_CODE" != "NONE" ]; then
-              TARGET_LANG_CONFIG="CONFIG_FIRMWARE_INCLUDE_LANG_$LANG_CODE"
-              if grep -q "$TARGET_LANG_CONFIG" "$CONFIG_PATH"; then
-                sed -i "s/^.*$TARGET_LANG_CONFIG.*/$TARGET_LANG_CONFIG=y/" "$CONFIG_PATH"
-                echo "✅ Enabled language: $LANG_CODE"
-              else
-                echo "$TARGET_LANG_CONFIG=y" >> "$CONFIG_PATH"
-                echo "✅ Appended language config: $LANG_CODE"
-              fi
+          CONFIG_PATH="build.config"
+          test -f "$CONFIG_PATH"
+          SELECTED_LANG_OPTION="${SELECTED_LANG_OPTION:-English_Only}"
+          LANG_CODE="${SELECTED_LANG_OPTION%% *}"
+
+          # Apply the language selection AFTER Nano, to the actual build config.
+          sed -i -E '/^[[:space:]]*#?[[:space:]]*CONFIG_FIRMWARE_INCLUDE_LANG_[A-Z]+([[:space:]]+is not set|=.*)?$/d' "$CONFIG_PATH"
+          for lang in EN CN RU BR CZ DA DE ES FI FR NO PL SV UK; do
+            if [[ "$lang" == EN || "$lang" == "$LANG_CODE" ]]; then
+              echo "CONFIG_FIRMWARE_INCLUDE_LANG_${lang}=y" >> "$CONFIG_PATH"
             else
-              echo "ℹ️ Keeping English Only."
+              echo "CONFIG_FIRMWARE_INCLUDE_LANG_${lang}=n" >> "$CONFIG_PATH"
             fi
-            
-            echo "🔍 Current Enabled Languages in Config:"
-            grep "^CONFIG_FIRMWARE_INCLUDE_LANG_" "$CONFIG_PATH" || echo "(None - English Only)"
+          done
+          if [[ "$LANG_CODE" == English_Only ]]; then
+            echo "RELEASE_LANG=English Only" >> "$GITHUB_ENV"
           else
-            echo "❌ Error: Could not find template config for $TARGET_BOARD"
-            echo "   Please check inputs.target_select matches the filename in trunk/configs/templates/"
-            exit 1
+            echo "RELEASE_LANG=English + $SELECTED_LANG_OPTION" >> "$GITHUB_ENV"
           fi
+          grep '^CONFIG_FIRMWARE_INCLUDE_LANG_' "$CONFIG_PATH"
           echo "::endgroup::"
-      
+
       - name: 🕊️ Dave Täht Tribute & CAKE Patch
         run: |
           # =======================================================
@@ -1924,6 +1897,46 @@ jobs:
           fi
           echo "::endgroup::"
       
+      # Experimental hardware AES support for TL-MR3020 V3 (CryptoDev).
+      - name: Enable Hardware AES Acceleration
+        if: inputs.target_select == 'TL_MR3020-V3'
+        run: |
+          set -euo pipefail
+          SSL_MAKE="padavan-ng/trunk/libs/libssl/3.0/Makefile"
+          VPN_MAKE="padavan-ng/trunk/user/openvpn/Makefile"
+          CRYPTODEV_DIR="$(realpath padavan-ng/trunk/linux-3.4.x/drivers/crypto/cryptodev)"
+
+          test -f "$SSL_MAKE"
+          test -f "$VPN_MAKE"
+          test -f "$CRYPTODEV_DIR/crypto/cryptodev.h"
+          grep -qx 'SRC_NAME=openssl-3.0.18' "$SSL_MAKE"
+          grep -qx 'SRC_NAME=openvpn-2.6.15' "$VPN_MAKE"
+          grep -q '^CONFIG_FIRMWARE_INCLUDE_OPENVPN=y$' build.config
+          grep -q '^CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE=y$' build.config
+
+          # Use static engines inside libcrypto; keep no-dso and no-afalgeng.
+          grep -q 'no-static-engine' "$SSL_MAKE"
+          grep -q '^OPENSSL_OPTIONS += no-devcryptoeng$' "$SSL_MAKE"
+          grep -q '^OPENSSL_OPTIONS += no-engine$' "$SSL_MAKE"
+          sed -i 's/no-static-engine/enable-static-engine/g' "$SSL_MAKE"
+          sed -i 's/^OPENSSL_OPTIONS += no-devcryptoeng$/OPENSSL_OPTIONS += enable-devcryptoeng/' "$SSL_MAKE"
+          sed -i 's/^OPENSSL_OPTIONS += no-engine$/OPENSSL_OPTIONS += enable-engine/' "$SSL_MAKE"
+          # Configure is executed inside the extracted OpenSSL source directory;
+          # an absolute include path avoids ambiguity during cross-compilation.
+          sed -i "/^OPENSSL_OPTIONS += enable-devcryptoeng$/a OPENSSL_OPTIONS += -I${CRYPTODEV_DIR}" "$SSL_MAKE"
+
+          grep -q -- '--with-crypto-library=openssl' "$VPN_MAKE"
+          sed -i 's/--with-crypto-library=openssl/--with-crypto-library=openssl --with-openssl-engine=yes/' "$VPN_MAKE"
+
+          echo "=== OpenSSL configuration ==="
+          grep -nE 'engine|cryptoeng|cryptodev' "$SSL_MAKE"
+          echo "=== OpenVPN configuration ==="
+          grep -n -- 'with-openssl-engine=yes' "$VPN_MAKE"
+          if grep -Eq '(^|[[:space:]])no-(engine|devcryptoeng|static-engine)([[:space:]]|$)' "$SSL_MAKE"; then
+            echo "::error::Conflicting OpenSSL engine flags remain"
+            exit 1
+          fi
+
       # 8. 開始編譯
       - name: Build firmware
         run: |
@@ -1938,6 +1951,29 @@ jobs:
           set -o pipefail
           ./build_firmware.sh 2>&1 | tee build.log
           echo "::endgroup::"
+
+      - name: Verify Hardware AES Build
+        if: inputs.target_select == 'TL_MR3020-V3'
+        run: |
+          set -euo pipefail
+          TRUNK="padavan-ng/trunk"
+          SSL_SRC="$TRUNK/libs/libssl/3.0/openssl-3.0.18"
+          VPN_SRC="$TRUNK/user/openvpn/openvpn-2.6.15"
+          SSL_CFG="$SSL_SRC/include/openssl/configuration.h"
+          VPN_CFG="$VPN_SRC/config.h"
+          test -f "$SSL_CFG"
+          test -f "$VPN_CFG"
+          if grep -Eq '^#[[:space:]]*define[[:space:]]+OPENSSL_NO_(ENGINE|DEVCRYPTOENG|STATIC_ENGINE)([[:space:]]|$)' "$SSL_CFG"; then
+            echo "::error::OpenSSL hardware engine support is disabled"
+            exit 1
+          fi
+          grep -Eq '^#[[:space:]]*define[[:space:]]+OPENSSL_NO_DYNAMIC_ENGINE([[:space:]]|$)' "$SSL_CFG"
+          grep -Eq '^#[[:space:]]*define[[:space:]]+HAVE_OPENSSL_ENGINE[[:space:]]+1([[:space:]]|$)' "$VPN_CFG"
+          test -f "$TRUNK/romfs/usr/sbin/openvpn"
+          test -f "$TRUNK/romfs/usr/bin/openssl"
+          test -f "$TRUNK/romfs/lib/modules/3.4.113/kernel/drivers/crypto/cryptodev/cryptodev.ko"
+          test -n "$(find "$TRUNK/romfs/lib/modules" -name mtk_aes.ko -print -quit)"
+          echo "Build-time Engine verification passed (runtime tests still required)."
 
       # 9. 智慧打包與產物偵測 (含 iptables Debug 檔案)
       - name: Smart-Pack & Debug Collection
@@ -1969,6 +2005,9 @@ jobs:
           [ -f "padavan-ng/trunk/configs/boards/busybox.config" ] && cp "padavan-ng/trunk/configs/boards/busybox.config" "$PACK_DIR/busybox.config"
           [ -f "padavan-ng/trunk/user/shared/defaults.h" ] && cp "padavan-ng/trunk/user/shared/defaults.h" "$PACK_DIR/defaults.h.txt"
           [ -f "padavan-ng/trunk/user/www/dict/CN.dict" ] && cp "padavan-ng/trunk/user/www/dict/CN.dict" "$PACK_DIR/CN.dict.txt"
+          [ ! -f "padavan-ng/trunk/user/www/dict/RU.dict" ] || cp "padavan-ng/trunk/user/www/dict/RU.dict" "$PACK_DIR/RU.dict.txt"
+          [ ! -f "padavan-ng/trunk/libs/libssl/3.0/openssl-3.0.18/include/openssl/configuration.h" ] || cp "padavan-ng/trunk/libs/libssl/3.0/openssl-3.0.18/include/openssl/configuration.h" "$PACK_DIR/openssl-configuration.h.txt"
+          [ ! -f "padavan-ng/trunk/user/openvpn/openvpn-2.6.15/config.h" ] || cp "padavan-ng/trunk/user/openvpn/openvpn-2.6.15/config.h" "$PACK_DIR/openvpn-config.h.txt"
           [ -f "padavan-ng/trunk/linux-3.4.x/.config" ] && cp "padavan-ng/trunk/linux-3.4.x/.config" "$PACK_DIR/kernel.config"
           [ -f "padavan-ng/trunk/build.log" ] && cp "padavan-ng/trunk/build.log" "$PACK_DIR/build.log"
 
