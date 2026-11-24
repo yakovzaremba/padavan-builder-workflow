@@ -269,6 +269,11 @@ jobs:
           for v in "${!PADAVAN_@}" "${!CONFIG_@}"; do
             echo "$v=${!v}" >> $GITHUB_ENV
           done
+          if [ "${{ inputs.target_select }}" = "TL_MR3020-V3" ]; then
+            echo "PADAVAN_REPO=https://github.com/TW641/padavan-ng" >> "$GITHUB_ENV"
+            echo "PADAVAN_BRANCH=master" >> "$GITHUB_ENV"
+            echo "PADAVAN_COMMIT=44e2dab65e" >> "$GITHUB_ENV"
+          fi
           echo "::endgroup::"
 
       # 3. 下載源碼
@@ -589,6 +594,9 @@ jobs:
               "CONFIG_FEATURE_GETOPT_LONG y"
               "CONFIG_HEXDUMP y"
               "CONFIG_XXD y"
+              "CONFIG_MKTEMP y"
+              "CONFIG_CMP y"
+              "CONFIG_TIMEOUT y"
               "CONFIG_FEATURE_MDEV_DAEMON y"
               "CONFIG_MKE2FS y"
               "CONFIG_MKDOSFS y"
@@ -1937,6 +1945,130 @@ jobs:
             exit 1
           fi
 
+          # Runtime integration: client-only configuration, driver loading, and self-test.
+          VPN_DIR="padavan-ng/trunk/user/openvpn"
+          RC_FILE="padavan-ng/trunk/user/rc/vpn_openvpn.c"
+          test -f "$RC_FILE"
+          cat > "$VPN_DIR/openssl-vpn-hw.cnf" <<'VPN_HW_CONF'
+          openssl_conf = vpn_hw_init
+
+          [vpn_hw_init]
+          engines = vpn_hw_engines
+
+          [vpn_hw_engines]
+          devcrypto = vpn_hw_devcrypto
+
+          [vpn_hw_devcrypto]
+          engine_id = devcrypto
+          USE_SOFTDRIVERS = 1
+          CIPHERS = AES-128-CBC
+          init = 1
+          VPN_HW_CONF
+          cat > "$VPN_DIR/openvpn-client-hw.sh" <<'VPN_HW_SCRIPT'
+          #!/bin/sh
+          # TL-MR3020 V3: prepare cryptodev before OpenSSL initializes in OpenVPN.
+          # Do not force CBC negotiation or change existing VPN credentials/routes.
+          OPENVPN=/usr/sbin/openvpn
+          OPENSSL=/usr/bin/openssl
+          HWCONF=/etc_ro/openssl-vpn-hw.cnf
+
+          # An explicit user engine is left alone; automatic mode needs no engine directive.
+          modprobe mtk_aes >/dev/null 2>&1 || :
+          modprobe cryptodev >/dev/null 2>&1 || :
+
+          if [ ! -c /dev/crypto ] || ! grep -q '^[[:space:]]*60[[:space:]]*crypto$' /proc/misc; then
+              logger -t vpn-aes 'CryptoDev device unavailable; using normal OpenVPN startup'
+              exec "$OPENVPN" "$@"
+          fi
+
+          # NIST SP 800-38A F.2.1: 4-block AES-128-CBC known-answer test.
+          # No production secrets are used. Reject an incorrect result or round trip.
+          check_cbc() (
+              umask 077
+              dir=$(mktemp -d /tmp/vpn-aes.XXXXXX) || exit 1
+              trap 'rm -rf "$dir"' EXIT
+              trap 'exit 1' HUP INT TERM
+              key=2b7e151628aed2a6abf7158809cf4f3c
+              iv=000102030405060708090a0b0c0d0e0f
+              printf '%s' '6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710' | xxd -r -p > "$dir/plain" || exit 1
+              printf '%s' '7649abac8119b246cee98e9b12e9197d5086cb9b507219ee95db113a917678b273bed6b8e3c1743b7116e69e222295163ff1caa1681fac09120eca307586e1a7' | xxd -r -p > "$dir/expected" || exit 1
+              [ "$(wc -c < "$dir/plain")" -eq 64 ] || exit 1
+              [ "$(wc -c < "$dir/expected")" -eq 64 ] || exit 1
+              export OPENSSL_CONF="$HWCONF"
+              timeout -k 2 10 "$OPENSSL" engine -t -c devcrypto > "$dir/engine" 2>&1 || exit 1
+              grep -q 'AES-128-CBC' "$dir/engine" || exit 1
+              grep -q '\[ available \]' "$dir/engine" || exit 1
+              timeout -k 2 10 "$OPENSSL" enc -aes-128-cbc -engine devcrypto -e -nopad -K "$key" -iv "$iv" -in "$dir/plain" -out "$dir/cipher" >/dev/null 2>&1 || exit 1
+              cmp -s "$dir/cipher" "$dir/expected" || exit 1
+              timeout -k 2 10 "$OPENSSL" enc -aes-128-cbc -engine devcrypto -d -nopad -K "$key" -iv "$iv" -in "$dir/cipher" -out "$dir/decrypted" >/dev/null 2>&1 || exit 1
+              cmp -s "$dir/plain" "$dir/decrypted" || exit 1
+          )
+
+          if ! check_cbc; then
+              logger -t vpn-aes 'DevCrypto AES-128-CBC self-test failed; using normal OpenVPN startup'
+              exec "$OPENVPN" "$@"
+          fi
+
+          # The generated client.conf is in this directory on Padavan.
+          if grep -Eq '^[[:space:]]*engine[[:space:]]+' /etc/openvpn/client/client.conf; then
+              logger -t vpn-aes 'Explicit engine in client.conf; preserving user choice'
+              # Make CBC available to an explicitly selected devcrypto engine as well.
+              export OPENSSL_CONF="$HWCONF"
+              exec "$OPENVPN" "$@"
+          fi
+          logger -t vpn-aes 'DevCrypto AES-128-CBC encrypt/decrypt self-test passed; enabling engine for OpenVPN client'
+          export OPENSSL_CONF="$HWCONF"
+          exec "$OPENVPN" "$@" --engine devcrypto
+          VPN_HW_SCRIPT
+          chmod 0755 "$VPN_DIR/openvpn-client-hw.sh"
+          sh -n "$VPN_DIR/openvpn-client-hw.sh"
+          cat > "$VPN_DIR/vpn-aes-backend.patch" <<'VPN_HW_PATCH'
+          --- a/src/openvpn/crypto_openssl.c
+          +++ b/src/openvpn/crypto_openssl.c
+          @@ -822,5 +822,18 @@
+               if (!EVP_CipherInit_ex(ctx, NULL, NULL, key, NULL, enc))
+               {
+                   crypto_msg(M_FATAL, "EVP cipher init #2");
+               }
+          +#if HAVE_OPENSSL_ENGINE
+          +    if (EVP_CIPHER_nid(kt) == NID_aes_128_cbc)
+          +    {
+          +        const EVP_CIPHER *method = NULL;
+          +        if (engine_persist && strcmp(ENGINE_get_id(engine_persist), "devcrypto") == 0)
+          +        {
+          +            method = ENGINE_get_cipher(engine_persist, NID_aes_128_cbc);
+          +        }
+          +        msg(M_INFO, "VPN AES-128-CBC backend (%s): %s",
+          +            enc ? "encrypt" : "decrypt",
+          +            method && EVP_CIPHER_CTX_get0_cipher(ctx) == method ? "devcrypto" : "not devcrypto");
+          +    }
+          +#endif
+               /* make sure we used a big enough key */
+          VPN_HW_PATCH
+
+          # Patch only the client launch (not OpenVPN server, mktun, or other SSL users).
+          python3 - "$RC_FILE" "$VPN_MAKE" <<'PY_HW'
+          from pathlib import Path
+          import sys
+          rc = Path(sys.argv[1])
+          s = rc.read_text()
+          old = 'OPENVPN_EXE,\n\t\t"--daemon", "openvpn-cli",'
+          new = '"/usr/sbin/openvpn-client-hw",\n\t\t"--daemon", "openvpn-cli",'
+          assert s.count(old) == 1, "OpenVPN client launch anchor changed"
+          rc.write_text(s.replace(old, new))
+          make = Path(sys.argv[2])
+          s = make.read_text()
+          old = '\t\tpatch -d $(SRC_NAME) -p1 -i ../openvpn-orig.patch; ' + chr(92) + '\n'
+          assert s.count(old) == 1, "OpenVPN extraction anchor changed"
+          # The new patch must succeed, rather than being silently skipped.
+          new = old + '\t\tpatch -d $(SRC_NAME) -p1 -i ../vpn-aes-backend.patch || exit 1; ' + chr(92) + '\n'
+          s = s.replace(old, new)
+          anchor = '\t$(ROMFSINST) $(SRC_NAME)/src/openvpn/openvpn /usr/sbin/openvpn\n'
+          assert s.count(anchor) == 1, "OpenVPN ROMFS install anchor changed"
+          s = s.replace(anchor, anchor + '\t$(ROMFSINST) -p +x openvpn-client-hw.sh /usr/sbin/openvpn-client-hw\n' + '\t$(ROMFSINST) openssl-vpn-hw.cnf /etc_ro/openssl-vpn-hw.cnf\n')
+          make.write_text(s)
+          PY_HW
+
       # 8. 開始編譯
       - name: Build firmware
         run: |
@@ -1973,7 +2105,18 @@ jobs:
           test -f "$TRUNK/romfs/usr/bin/openssl"
           test -f "$TRUNK/romfs/lib/modules/3.4.113/kernel/drivers/crypto/cryptodev/cryptodev.ko"
           test -n "$(find "$TRUNK/romfs/lib/modules" -name mtk_aes.ko -print -quit)"
-          echo "Build-time Engine verification passed (runtime tests still required)."
+          test -x "$TRUNK/romfs/usr/sbin/openvpn-client-hw"
+          test -f "$TRUNK/romfs/etc_ro/openssl-vpn-hw.cnf"
+          grep -qx 'USE_SOFTDRIVERS = 1' "$TRUNK/romfs/etc_ro/openssl-vpn-hw.cnf"
+          grep -qx 'CIPHERS = AES-128-CBC' "$TRUNK/romfs/etc_ro/openssl-vpn-hw.cnf"
+          grep -Fq 'VPN AES-128-CBC backend' "$VPN_SRC/src/openvpn/crypto_openssl.c"
+          grep -aFq 'VPN AES-128-CBC backend' "$TRUNK/romfs/usr/sbin/openvpn"
+          grep -Fq 'openvpn-client-hw' "$TRUNK/user/rc/vpn_openvpn.c"
+          for app in MKTEMP CMP TIMEOUT XXD; do
+            grep -qx "CONFIG_${app}=y" "$TRUNK/configs/boards/busybox.config"
+          done
+          sh -n "$TRUNK/romfs/usr/sbin/openvpn-client-hw"
+          echo "Build-time Engine and runtime integration verification passed (router tests still required)."
 
       # 9. 智慧打包與產物偵測 (含 iptables Debug 檔案)
       - name: Smart-Pack & Debug Collection
@@ -2010,6 +2153,11 @@ jobs:
           [ ! -f "padavan-ng/trunk/user/openvpn/openvpn-2.6.15/config.h" ] || cp "padavan-ng/trunk/user/openvpn/openvpn-2.6.15/config.h" "$PACK_DIR/openvpn-config.h.txt"
           [ -f "padavan-ng/trunk/linux-3.4.x/.config" ] && cp "padavan-ng/trunk/linux-3.4.x/.config" "$PACK_DIR/kernel.config"
           [ -f "padavan-ng/trunk/build.log" ] && cp "padavan-ng/trunk/build.log" "$PACK_DIR/build.log"
+
+          if [ -f "padavan-ng/trunk/romfs/usr/sbin/openvpn-client-hw" ]; then
+            cp "padavan-ng/trunk/romfs/usr/sbin/openvpn-client-hw" "$PACK_DIR/openvpn-client-hw.sh"
+            cp "padavan-ng/trunk/romfs/etc_ro/openssl-vpn-hw.cnf" "$PACK_DIR/openssl-vpn-hw.cnf"
+          fi
 
           # =======================================================
           # 🔥 [NEW] 收集 BusyBox Patches (CVE Debug)
