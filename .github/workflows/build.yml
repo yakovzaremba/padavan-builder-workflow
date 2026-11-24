@@ -1925,25 +1925,6 @@ jobs:
           echo "::endgroup::"
       
       # 8. 開始編譯
-    - name: Enable Hardware AES Acceleration
-        run: |
-          SSL_MAKE="padavan-ng/trunk/libs/libssl/3.0/Makefile"
-          VPN_MAKE="padavan-ng/trunk/user/openvpn/Makefile"
-
-          sed -i 's/no-static-engine/enable-static-engine/g' "$SSL_MAKE"
-          sed -i 's/no-devcryptoeng/enable-devcryptoeng/g' "$SSL_MAKE"
-          sed -i '/^OPENSSL_OPTIONS += no-engine$/d' "$SSL_MAKE"
-
-          sed -i '/^CFLAGS :=/i COPTS += -I$(abspath ../../../linux-3.4.x/drivers/crypto/cryptodev)' "$SSL_MAKE"
-
-          sed -i '/--with-crypto-library=openssl/a\		--with-openssl-engine=yes \\' "$VPN_MAKE"
-
-          echo "=== OpenSSL configuration ==="
-          grep -nE 'engine|cryptoeng|cryptodev' "$SSL_MAKE"
-
-          echo "=== OpenVPN configuration ==="
-          grep -n 'with-openssl-engine' "$VPN_MAKE"
-
       - name: Build firmware
         run: |
           echo "::group::Build Process"
