@@ -1,4 +1,4 @@
-name: Build firmware (TL-MR3020 V3 - AES v5 - scoped OpenVPN patch)
+name: Build firmware (TL-MR3020 V3 - AES v6 - CryptoDev alignment fix)
 
 permissions:
   contents: read
@@ -116,7 +116,7 @@ jobs:
           if [ "${{ inputs.target_select }}" = "TL_MR3020-V3" ]; then
             echo "PADAVAN_REPO=https://github.com/TW641/padavan-ng" >> "$GITHUB_ENV"
             echo "PADAVAN_BRANCH=master" >> "$GITHUB_ENV"
-            echo "PADAVAN_COMMIT=44e2dab65e" >> "$GITHUB_ENV"
+            echo "PADAVAN_COMMIT=44e2dab65eb2ad78bea78a2adce7040fd8a3d22a" >> "$GITHUB_ENV"
           fi
           echo "::endgroup::"
 
@@ -131,10 +131,12 @@ jobs:
           fi
           wget -q -O toolchain.tzst "$PADAVAN_TOOLCHAIN_URL"
           sha256sum toolchain.tzst > toolchain.sha256
+          # Exact toolchain from the successful AES v5 artifact. Fail before extraction.
+          echo "cd6e8635765e706f8cfb6212a7d286be245f5e943c356006bff998845eeee3e7  toolchain.tzst" | sha256sum -c -
           tar -C padavan-ng --zstd -xf toolchain.tzst
           rm -f toolchain.tzst
           git -C padavan-ng rev-parse HEAD > padavan-source-commit.txt
-          test "$(cut -c1-10 padavan-source-commit.txt)" = "44e2dab65e"
+          test "$(cat padavan-source-commit.txt)" = "44e2dab65eb2ad78bea78a2adce7040fd8a3d22a"
           echo "::endgroup::"
 
       # 4. 生成 Config
@@ -2028,6 +2030,75 @@ jobs:
           grep -Fq 'EVP_CIPHER_CTX_get0_cipher(ctx) != method' "$SRC"
           echo 'PASS: OpenVPN backend patch applied before compilation.'
 
+      - name: Apply and verify CryptoDev alignment fix
+        run: |
+          set -euo pipefail
+          mkdir -p aes-build-diagnostics
+          SRC=padavan-ng/trunk/linux-3.4.x/drivers/crypto/cryptodev/main.c
+          DIAG="$PWD/aes-build-diagnostics"
+          PATCH="$DIAG/0001-cryptodev-use-copy-path-for-unaligned-buffers.patch"
+          # Base64 preserves every byte of the report's canonical patch, including tabs.
+          base64 -d > "$PATCH" <<'CRYPTODEV_PATCH_B64'
+          RnJvbSAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwIE1vbiBTZXAgMTcg
+          MDA6MDA6MDAgMjAwMQpTdWJqZWN0OiBbUEFUQ0hdIGNyeXB0b2RldjogdXNlIHRoZSBjb3B5aW5n
+          IHBhdGggZm9yIHVuYWxpZ25lZCBidWZmZXJzCgpjcnlwdG9fcnVuKCkgb25seSBsb29rZWQgYXQg
+          YWxpZ25tZW50IHdoZW4gdGhlIGNhbGxlciBoYWQgYWxyZWFkeSBzZXQKQ09QX0ZMQUdfTk9fWkMs
+          IGFuZCB0aGVuIGNsZWFyZWQgdGhhdCBmbGFnLiAgQ2xlYXJpbmcgaXQgc2VsZWN0cwpfX2NyeXB0
+          b19ydW5femMoKSwgdGhlIG9wcG9zaXRlIG9mIHRoZSB3YXJuaW5nIHRleHQsIHNvIGFuIHVuYWxp
+          Z25lZApyZXF1ZXN0IGVuZGVkIHVwIGluIHRoZSB6ZXJvLWNvcHkgcGF0aC4gIFRoZSB0ZXN0IGl0
+          c2VsZiB1c2VkCklTX0FMSUdORUQoYWRkciwgYWxpZ25tYXNrKSBpbnN0ZWFkIG9mIElTX0FMSUdO
+          RUQoYWRkciwgYWxpZ25tYXNrICsgMSksCnNvIHdpdGggYWxpZ25tYXNrIDE1IGEgYnVmZmVyIHdp
+          dGggcmVtYWluZGVyIDggZmFpbGVkIHRoZSB0ZXN0IGFuZCBpdHMKY29weSByZXF1ZXN0IHdhcyBk
+          cm9wcGVkLgoKT3BlblNTTCdzIGRldmNyeXB0byBlbmdpbmUgbmV2ZXIgc2V0cyBDT1BfRkxBR19O
+          T19aQy4gIEl0IGhhbmRzIHRoZQplbmdpbmUncyBpbnRlcm5hbCBidWZmZXJzIChyZW1haW5kZXIg
+          OCBvbiB0aGlzIHJvdXRlcikgc3RyYWlnaHQgdG8KQ0lPQ0NSWVBULCBzbyBpdCBhbHdheXMgcmVh
+          Y2hlZCB0aGUgemVyby1jb3B5IHBhdGguICBUaGF0IGlzIHRoZSBwYXRoCnRoYXQgY29ycnVwdHMg
+          bWVtb3J5IG5leHQgdG8gdGhlIG91dHB1dCBidWZmZXIgYW5kIGNyYXNoZXMKRVZQX0NpcGhlckZp
+          bmFsX2V4KCkuCgpGb3JjZSB0aGUgY29weWluZyBwYXRoIHdoZW5ldmVyIGVpdGhlciB1c2VyIGJ1
+          ZmZlciBkb2VzIG5vdCBzYXRpc2Z5IHRoZQphbGlnbm1lbnQgcmVwb3J0ZWQgYnkgdGhlIGFsZ29y
+          aXRobSwgYW5kIG5ldmVyIGNsZWFyIGFuIGV4cGxpY2l0bHkKcmVxdWVzdGVkIENPUF9GTEFHX05P
+          X1pDLgoKLS0tIGEvdHJ1bmsvbGludXgtMy40LngvZHJpdmVycy9jcnlwdG8vY3J5cHRvZGV2L21h
+          aW4uYworKysgYi90cnVuay9saW51eC0zLjQueC9kcml2ZXJzL2NyeXB0by9jcnlwdG9kZXYvbWFp
+          bi5jCkBAIC0yMjQsMTcgKzIyNCwxOCBAQCBpbnQgY3J5cHRvX3J1bihzdHJ1Y3QgZmNyeXB0ICpm
+          Y3IsIHN0cnVjdCBrZXJuZWxfY3J5cHRfb3AgKmtjb3ApCiAJaWYgKGxpa2VseShjb3AtPmxlbikp
+          IHsKLQkJaWYgKGNvcC0+ZmxhZ3MgJiBDT1BfRkxBR19OT19aQykgewotCQkJaWYgKHVubGlrZWx5
+          KHNlc19wdHItPmFsaWdubWFzayAmJiAhSVNfQUxJR05FRCgodW5zaWduZWQgbG9uZyljb3AtPnNy
+          Yywgc2VzX3B0ci0+YWxpZ25tYXNrKSkpIHsKLQkJCQlkd2FybmluZygyLCAic291cmNlIGFkZHJl
+          c3MgJXAgaXMgbm90ICVkIGJ5dGUgYWxpZ25lZCAtIGRpc2FibGluZyB6ZXJvIGNvcHkiLAotCQkJ
+          CQkJY29wLT5zcmMsIHNlc19wdHItPmFsaWdubWFzayArIDEpOwotCQkJCWNvcC0+ZmxhZ3MgJj0g
+          fkNPUF9GTEFHX05PX1pDOwotCQkJfQotCi0JCQlpZiAodW5saWtlbHkoc2VzX3B0ci0+YWxpZ25t
+          YXNrICYmICFJU19BTElHTkVEKCh1bnNpZ25lZCBsb25nKWNvcC0+ZHN0LCBzZXNfcHRyLT5hbGln
+          bm1hc2spKSkgewotCQkJCWR3YXJuaW5nKDIsICJkZXN0aW5hdGlvbiBhZGRyZXNzICVwIGlzIG5v
+          dCAlZCBieXRlIGFsaWduZWQgLSBkaXNhYmxpbmcgemVybyBjb3B5IiwKLQkJCQkJCWNvcC0+ZHN0
+          LCBzZXNfcHRyLT5hbGlnbm1hc2sgKyAxKTsKLQkJCQljb3AtPmZsYWdzICY9IH5DT1BfRkxBR19O
+          T19aQzsKLQkJCX0KLQkJfQorCQkvKgorCQkgKiBaZXJvIGNvcHkgaXMgb25seSBzYWZlIHdoZW4g
+          Ym90aCB1c2VyIGJ1ZmZlcnMgc2F0aXNmeSB0aGUKKwkJICogYWxpZ25tZW50IHJlcG9ydGVkIGJ5
+          IHRoZSBhbGdvcml0aG0uICBPdGhlcndpc2UgZm9yY2UgdGhlCisJCSAqIGNvcHlpbmcgcGF0aCwg
+          aW5jbHVkaW5nIHdoZW4gdGhlIGNhbGxlciBkaWQgbm90IGFzayBmb3IgaXQuCisJCSAqIENPUF9G
+          TEFHX05PX1pDIG11c3QgbmV2ZXIgYmUgY2xlYXJlZCBoZXJlOiBjbGVhcmluZyBpdAorCQkgKiBz
+          ZWxlY3RzIHplcm8gY29weSwgdGhlIG9wcG9zaXRlIG9mIHdoYXQgdGhlIG9sZCBjaGVjayBtZWFu
+          dC4KKwkJICovCisJCWlmICh1bmxpa2VseShzZXNfcHRyLT5hbGlnbm1hc2sgJiYKKwkJICAgICgh
+          SVNfQUxJR05FRCgodW5zaWduZWQgbG9uZyljb3AtPnNyYywgc2VzX3B0ci0+YWxpZ25tYXNrICsg
+          MSkgfHwKKwkJICAgICAhSVNfQUxJR05FRCgodW5zaWduZWQgbG9uZyljb3AtPmRzdCwgc2VzX3B0
+          ci0+YWxpZ25tYXNrICsgMSkpKSkgeworCQkJZHdhcm5pbmcoMiwgInNvdXJjZS9kZXN0aW5hdGlv
+          biBhZGRyZXNzIGlzIG5vdCAlZCBieXRlIGFsaWduZWQgLSB1c2luZyB0aGUgY29weWluZyBwYXRo
+          IiwKKwkJCQkgc2VzX3B0ci0+YWxpZ25tYXNrICsgMSk7CisJCQljb3AtPmZsYWdzIHw9IENPUF9G
+          TEFHX05PX1pDOworCQl9CiAKIAkJaWYgKGNvcC0+ZmxhZ3MgJiBDT1BfRkxBR19OT19aQykKIAkJ
+          CXJldCA9IF9fY3J5cHRvX3J1bl9zdGQoc2VzX3B0ciwgJmtjb3AtPmNvcCk7Ci0tIAoyLjQzLjAK
+          CRYPTODEV_PATCH_B64
+          echo "113c1523381b1fd353a1570fa760e43146ae7a83efc8c94d7782783193003160  $PATCH" | sha256sum -c -
+          test -f "$SRC"
+          cp "$SRC" "$DIAG/cryptodev-main.before.c"
+          echo "611f51f856fb9ac0159656c55b67619e53ef21696b5e33ed80c9f0c6697af294  $SRC" | sha256sum -c -
+          git -C padavan-ng apply --check "$PATCH"
+          git -C padavan-ng apply "$PATCH"
+          cp "$SRC" "$DIAG/cryptodev-main.after.c"
+          echo "39d81417fc110b0342a16e5e855731ca860671317616e8d7fe43c3e5f15c5b57  $SRC" | sha256sum -c -
+          git -C padavan-ng diff -- trunk/linux-3.4.x/drivers/crypto/cryptodev/main.c > "$DIAG/cryptodev-alignment.diff"
+          test -s "$DIAG/cryptodev-alignment.diff"
+          sha256sum "$DIAG/cryptodev-main.before.c" "$DIAG/cryptodev-main.after.c" "$PATCH" | tee "$DIAG/cryptodev-source-sha256.txt"
+          echo 'PASS: exact CryptoDev alignment patch applied before kernel compilation.'
+
       - name: Build firmware
         run: |
           set -euo pipefail
@@ -2035,7 +2106,9 @@ jobs:
           cd padavan-ng/trunk
           grep -Fq 'VPN AES-128-CBC backend' user/openvpn/openvpn-2.6.15/src/openvpn/crypto_openssl.c
           echo "Starting build... Logs will be saved to build.log"
+          echo "39d81417fc110b0342a16e5e855731ca860671317616e8d7fe43c3e5f15c5b57  linux-3.4.x/drivers/crypto/cryptodev/main.c" | sha256sum -c -
           ./build_firmware.sh 2>&1 | tee build.log
+          echo "39d81417fc110b0342a16e5e855731ca860671317616e8d7fe43c3e5f15c5b57  linux-3.4.x/drivers/crypto/cryptodev/main.c" | sha256sum -c -
           echo "::endgroup::"
 
       - name: Verify Hardware AES Build
@@ -2190,6 +2263,53 @@ jobs:
           done
           echo 'PASS: all required files are present in the actual compressed flash image.'
 
+      - name: Verify and export CryptoDev module for RAM testing
+        run: |
+          set -euo pipefail
+          T=padavan-ng/trunk
+          DIAG=aes-build-diagnostics
+          mkdir -p "$DIAG"
+          # A matching kernel configuration is necessary (not sufficient) for v5 ABI compatibility.
+          python3 - "$T/linux-3.4.x/.config" <<'PY_KERNEL' | tee "$DIAG/cryptodev-kernel-abi.txt"
+          import hashlib, re, sys
+          from pathlib import Path
+          cfg = Path(sys.argv[1]).read_text()
+          entries = [line for line in cfg.splitlines() if re.fullmatch(r'(?:CONFIG_[A-Za-z0-9_]+=.*|# CONFIG_[A-Za-z0-9_]+ is not set)', line)]
+          if not entries:
+              raise SystemExit('Empty kernel configuration')
+          digest = hashlib.sha256(('\n'.join(sorted(entries)) + '\n').encode()).hexdigest()
+          print('v5 reference kernel config SHA256:', 'c32121067da296a44a94b411bd60e90a8f4729bf8a1dac75072d80ee7081c552')
+          print('v6 actual kernel config SHA256:   ', digest)
+          if digest != 'c32121067da296a44a94b411bd60e90a8f4729bf8a1dac75072d80ee7081c552':
+              raise SystemExit('Kernel configuration differs from v5; do not use this module as a drop-in replacement')
+          print('PASS: normalized kernel configuration matches v5')
+          PY_KERNEL
+          mapfile -t modules < <(find "$T/romfs/lib/modules" -type f -name cryptodev.ko)
+          test "${#modules[@]}" -eq 1
+          module="${modules[0]}"
+          echo "Checking $module"
+          readelf -h "$module" | tee "$DIAG/cryptodev-elf.txt"
+          grep -Eq 'Class:.*ELF32' "$DIAG/cryptodev-elf.txt"
+          grep -Eq 'Data:.*little endian' "$DIAG/cryptodev-elf.txt"
+          grep -Eq 'Type:.*REL' "$DIAG/cryptodev-elf.txt"
+          grep -Eq 'Machine:.*MIPS' "$DIAG/cryptodev-elf.txt"
+          modinfo "$module" | tee "$DIAG/cryptodev-modinfo.txt"
+          test "$(modinfo -F vermagic "$module")" = '3.4.113 mod_unload MIPS32_R2 32BIT'
+          test -z "$(modinfo -F depends "$module")"
+          modhash=$(sha256sum "$module" | cut -d' ' -f1)
+          test "$modhash" != 'db3f6b9ee6ce2bc2473cc3239b8fca0d8621c6667b008a9db86d63d2bc1321b7'
+          # Verify the exact module exported below is the one in the final image.
+          unsquashfs -cat "$T/images/ramdisk" "${module#"$T/romfs/"}" | cmp - "$module"
+          mkdir -p cryptodev-module
+          cp "$module" cryptodev-module/cryptodev-patched.ko
+          cp "$T/linux-3.4.x/.config" cryptodev-module/kernel.config
+          cp padavan-source-commit.txt toolchain.sha256 cryptodev-module/
+          cp "$DIAG/cryptodev-modinfo.txt" "$DIAG/cryptodev-elf.txt" "$DIAG/cryptodev-kernel-abi.txt" "$DIAG/cryptodev-alignment.diff" "$DIAG/cryptodev-source-sha256.txt" "$DIAG/0001-cryptodev-use-copy-path-for-unaligned-buffers.patch" cryptodev-module/
+          printf '%s\n' "$GITHUB_SHA" > cryptodev-module/workflow-commit.txt
+          printf '%s\n' 'Experimental v6 module. Keep VPN stopped, verify SHA256 and test RAM-only before flashing.' > cryptodev-module/README.txt
+          (cd cryptodev-module && sha256sum cryptodev-patched.ko > sha256sum.txt && sha256sum -c sha256sum.txt)
+          echo "PASS: verified CryptoDev module exported: $modhash"
+
       - name: Package verified firmware
         run: |
           set -euo pipefail
@@ -2207,19 +2327,29 @@ jobs:
           printf '%s\n' "$GITHUB_SHA" > output_pack/workflow-commit.txt
           cp aes-build-diagnostics/verification.log aes-build-diagnostics/image-verification.txt aes-build-diagnostics/openvpn-patch.log aes-build-diagnostics/openvpn-backend.diff output_pack/
           cp "$T/build.log" output_pack/build.log
+          cp aes-build-diagnostics/cryptodev-alignment.diff aes-build-diagnostics/cryptodev-source-sha256.txt aes-build-diagnostics/cryptodev-modinfo.txt aes-build-diagnostics/cryptodev-kernel-abi.txt aes-build-diagnostics/0001-cryptodev-use-copy-path-for-unaligned-buffers.patch output_pack/
+          cp cryptodev-module/cryptodev-patched.ko output_pack/
           cd output_pack
-          sha256sum -- *.bin > sha256sum.txt
+          sha256sum -- *.bin cryptodev-patched.ko > sha256sum.txt
           md5sum -- *.bin > md5sum.txt
           sha256sum -c sha256sum.txt
-          zip -q ../padavan_TL_MR3020-V3_AES_v5.zip ./*
+          zip -q ../padavan_TL_MR3020-V3_AES_v6.zip ./*
           cd ..
-          unzip -t padavan_TL_MR3020-V3_AES_v5.zip
+          unzip -t padavan_TL_MR3020-V3_AES_v6.zip
+
+      - name: Upload standalone CryptoDev module artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cryptodev_TL_MR3020-V3_AES_v6_${{ github.run_id }}
+          path: cryptodev-module/
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Upload verified firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: padavan_TL_MR3020-V3_AES_v5_${{ github.run_id }}
-          path: padavan_TL_MR3020-V3_AES_v5.zip
+          name: padavan_TL_MR3020-V3_AES_v6_${{ github.run_id }}
+          path: padavan_TL_MR3020-V3_AES_v6.zip
           if-no-files-found: error
           retention-days: 14
 
@@ -2228,6 +2358,8 @@ jobs:
         run: |
           mkdir -p aes-build-diagnostics
           TRUNK="padavan-ng/trunk"
+          [ ! -f "$TRUNK/linux-3.4.x/drivers/crypto/cryptodev/main.c" ] || cp "$TRUNK/linux-3.4.x/drivers/crypto/cryptodev/main.c" aes-build-diagnostics/cryptodev-main.at-failure.c
+          [ ! -f "$TRUNK/linux-3.4.x/.config" ] || cp "$TRUNK/linux-3.4.x/.config" aes-build-diagnostics/kernel-at-failure.config
           # Keep build diagnostics, not firmware images or default credentials.
           src="$TRUNK/user/openvpn/openvpn-2.6.15/src/openvpn/crypto_openssl.c"
           if [ -f "$src" ]; then
