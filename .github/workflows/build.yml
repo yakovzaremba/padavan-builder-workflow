@@ -1,4 +1,4 @@
-name: Build firmware (TL-MR3020 V3 - AES v6 - CryptoDev alignment fix)
+name: Build firmware (TL-MR3020 V3 - AES v6.1 - CryptoDev alignment fix)
 
 permissions:
   contents: read
@@ -2265,10 +2265,19 @@ jobs:
 
       - name: Verify and export CryptoDev module for RAM testing
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
           T=padavan-ng/trunk
           DIAG=aes-build-diagnostics
           mkdir -p "$DIAG"
+          LOG="$DIAG/cryptodev-export-verification.log"
+          : > "$LOG"
+          report() { printf '%s\n' "$*" | tee -a "$LOG"; }
+          fail() { report "FAIL: $*"; echo "::error::$*"; exit 1; }
+          require() {
+            local label="$1"; shift
+            if "$@"; then report "PASS: $label"; else fail "$label"; fi
+          }
+          trap 'rc=$?; report "FAIL: command at line $LINENO: $BASH_COMMAND (exit $rc)"; exit "$rc"' ERR
           # A matching kernel configuration is necessary (not sufficient) for v5 ABI compatibility.
           python3 - "$T/linux-3.4.x/.config" <<'PY_KERNEL' | tee "$DIAG/cryptodev-kernel-abi.txt"
           import hashlib, re, sys
@@ -2279,36 +2288,55 @@ jobs:
               raise SystemExit('Empty kernel configuration')
           digest = hashlib.sha256(('\n'.join(sorted(entries)) + '\n').encode()).hexdigest()
           print('v5 reference kernel config SHA256:', 'c32121067da296a44a94b411bd60e90a8f4729bf8a1dac75072d80ee7081c552')
-          print('v6 actual kernel config SHA256:   ', digest)
+          print('v6.1 actual kernel config SHA256:   ', digest)
           if digest != 'c32121067da296a44a94b411bd60e90a8f4729bf8a1dac75072d80ee7081c552':
               raise SystemExit('Kernel configuration differs from v5; do not use this module as a drop-in replacement')
           print('PASS: normalized kernel configuration matches v5')
           PY_KERNEL
           mapfile -t modules < <(find "$T/romfs/lib/modules" -type f -name cryptodev.ko)
-          test "${#modules[@]}" -eq 1
+          require "Exactly one CryptoDev module (found ${#modules[@]})" test "${#modules[@]}" -eq 1
           module="${modules[0]}"
           echo "Checking $module"
           readelf -h "$module" | tee "$DIAG/cryptodev-elf.txt"
-          grep -Eq 'Class:.*ELF32' "$DIAG/cryptodev-elf.txt"
-          grep -Eq 'Data:.*little endian' "$DIAG/cryptodev-elf.txt"
-          grep -Eq 'Type:.*REL' "$DIAG/cryptodev-elf.txt"
-          grep -Eq 'Machine:.*MIPS' "$DIAG/cryptodev-elf.txt"
+          require 'ELF32 class' grep -Eq 'Class:.*ELF32' "$DIAG/cryptodev-elf.txt"
+          require 'Little-endian ELF' grep -Eq 'Data:.*little endian' "$DIAG/cryptodev-elf.txt"
+          require 'Relocatable ELF' grep -Eq 'Type:.*REL' "$DIAG/cryptodev-elf.txt"
+          require 'MIPS architecture' grep -Eq 'Machine:.*MIPS' "$DIAG/cryptodev-elf.txt"
           modinfo "$module" | tee "$DIAG/cryptodev-modinfo.txt"
-          test "$(modinfo -F vermagic "$module")" = '3.4.113 mod_unload MIPS32_R2 32BIT'
-          test -z "$(modinfo -F depends "$module")"
+          # Linux 3.4 appends a space to VERMAGIC_STRING; modinfo -F preserves it.
+          # Trim only trailing horizontal whitespace; all ABI tokens must match exactly.
+          raw_vermagic=$(modinfo -F vermagic "$module")
+          vermagic=$(printf '%s' "$raw_vermagic" | LC_ALL=C sed 's/[[:blank:]]*$//')
+          expected_vermagic='3.4.113 mod_unload MIPS32_R2 32BIT'
+          report "Raw vermagic: [$raw_vermagic]"
+          report "Normalized vermagic: [$vermagic]"
+          report "Expected vermagic: [$expected_vermagic]"
+          require 'Exact kernel vermagic (ignoring trailing blanks only)' test "$vermagic" = "$expected_vermagic"
+          # Capture the command status separately so a modinfo failure is not mistaken for empty dependencies.
+          depends=$(modinfo -F depends "$module")
+          report "Module dependencies: [$depends]"
+          require 'No module dependencies' test -z "$depends"
           modhash=$(sha256sum "$module" | cut -d' ' -f1)
-          test "$modhash" != 'db3f6b9ee6ce2bc2473cc3239b8fca0d8621c6667b008a9db86d63d2bc1321b7'
+          report "Built CryptoDev SHA256: $modhash"
+          printf '%s  %s\n' "$modhash" "$module" > "$DIAG/cryptodev-built-sha256.txt"
+          require 'Valid SHA256 format' bash -c '[[ $1 =~ ^[0-9a-f]{64}$ ]]' _ "$modhash"
+          require 'Built module differs from unpatched v5 module' test "$modhash" != 'db3f6b9ee6ce2bc2473cc3239b8fca0d8621c6667b008a9db86d63d2bc1321b7'
           # Verify the exact module exported below is the one in the final image.
-          unsquashfs -cat "$T/images/ramdisk" "${module#"$T/romfs/"}" | cmp - "$module"
+          if unsquashfs -cat "$T/images/ramdisk" "${module#"$T/romfs/"}" | cmp - "$module"; then
+            report 'PASS: packed module is byte-identical to the installed module'
+          else
+            fail 'Packed CryptoDev module does not match the installed module (or SquashFS read failed)'
+          fi
           mkdir -p cryptodev-module
           cp "$module" cryptodev-module/cryptodev-patched.ko
           cp "$T/linux-3.4.x/.config" cryptodev-module/kernel.config
           cp padavan-source-commit.txt toolchain.sha256 cryptodev-module/
           cp "$DIAG/cryptodev-modinfo.txt" "$DIAG/cryptodev-elf.txt" "$DIAG/cryptodev-kernel-abi.txt" "$DIAG/cryptodev-alignment.diff" "$DIAG/cryptodev-source-sha256.txt" "$DIAG/0001-cryptodev-use-copy-path-for-unaligned-buffers.patch" cryptodev-module/
           printf '%s\n' "$GITHUB_SHA" > cryptodev-module/workflow-commit.txt
-          printf '%s\n' 'Experimental v6 module. Keep VPN stopped, verify SHA256 and test RAM-only before flashing.' > cryptodev-module/README.txt
+          printf '%s\n' 'Experimental v6.1 module. Keep VPN stopped, verify SHA256 and test RAM-only before flashing.' > cryptodev-module/README.txt
           (cd cryptodev-module && sha256sum cryptodev-patched.ko > sha256sum.txt && sha256sum -c sha256sum.txt)
-          echo "PASS: verified CryptoDev module exported: $modhash"
+          report "PASS: verified CryptoDev module exported: $modhash"
+          cp "$LOG" "$DIAG/cryptodev-built-sha256.txt" cryptodev-module/
 
       - name: Package verified firmware
         run: |
@@ -2328,19 +2356,19 @@ jobs:
           cp aes-build-diagnostics/verification.log aes-build-diagnostics/image-verification.txt aes-build-diagnostics/openvpn-patch.log aes-build-diagnostics/openvpn-backend.diff output_pack/
           cp "$T/build.log" output_pack/build.log
           cp aes-build-diagnostics/cryptodev-alignment.diff aes-build-diagnostics/cryptodev-source-sha256.txt aes-build-diagnostics/cryptodev-modinfo.txt aes-build-diagnostics/cryptodev-kernel-abi.txt aes-build-diagnostics/0001-cryptodev-use-copy-path-for-unaligned-buffers.patch output_pack/
-          cp cryptodev-module/cryptodev-patched.ko output_pack/
+          cp cryptodev-module/cryptodev-patched.ko cryptodev-module/cryptodev-export-verification.log cryptodev-module/cryptodev-built-sha256.txt output_pack/
           cd output_pack
           sha256sum -- *.bin cryptodev-patched.ko > sha256sum.txt
           md5sum -- *.bin > md5sum.txt
           sha256sum -c sha256sum.txt
-          zip -q ../padavan_TL_MR3020-V3_AES_v6.zip ./*
+          zip -q ../padavan_TL_MR3020-V3_AES_v6_1.zip ./*
           cd ..
-          unzip -t padavan_TL_MR3020-V3_AES_v6.zip
+          unzip -t padavan_TL_MR3020-V3_AES_v6_1.zip
 
       - name: Upload standalone CryptoDev module artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cryptodev_TL_MR3020-V3_AES_v6_${{ github.run_id }}
+          name: cryptodev_TL_MR3020-V3_AES_v6_1_${{ github.run_id }}
           path: cryptodev-module/
           if-no-files-found: error
           retention-days: 14
@@ -2348,8 +2376,8 @@ jobs:
       - name: Upload verified firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: padavan_TL_MR3020-V3_AES_v6_${{ github.run_id }}
-          path: padavan_TL_MR3020-V3_AES_v6.zip
+          name: padavan_TL_MR3020-V3_AES_v6_1_${{ github.run_id }}
+          path: padavan_TL_MR3020-V3_AES_v6_1.zip
           if-no-files-found: error
           retention-days: 14
 
