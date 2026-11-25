@@ -1,4 +1,4 @@
-name: Build firmware (TL-MR3020 V3 - AES v4 - direct OpenVPN patch)
+name: Build firmware (TL-MR3020 V3 - AES v5 - scoped OpenVPN patch)
 
 permissions:
   contents: read
@@ -1915,30 +1915,113 @@ jobs:
           }
           rm -rf padavan-ng/trunk/tmp padavan-ng/trunk/staging
 
-          # The pinned TW641 revision tracks the extracted OpenVPN source in git.
-          # Do not put our patch inside Makefile's conditional extract_test.
-          python3 - <<'PY_OPENVPN' | tee aes-build-diagnostics/openvpn-patch.log
+          # Patch the vendored source after the clean step. Capture the actual input and stderr.
+          python3 -u - <<'PY_OPENVPN' 2>&1 | tee aes-build-diagnostics/openvpn-patch.log
           from pathlib import Path
           import difflib
+          import hashlib
+          import re
+          import sys
+
           p = Path('padavan-ng/trunk/user/openvpn/openvpn-2.6.15/src/openvpn/crypto_openssl.c')
+          diag = Path('aes-build-diagnostics')
+          diag.mkdir(exist_ok=True)
           if not p.is_file():
               raise SystemExit(f'Vendored OpenVPN source missing: {p}')
           original = p.read_text()
-          text = original
-          def replace_once(old, new, label):
-              global text
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'{label}: expected exactly one source anchor, found {count}')
-              text = text.replace(old, new, 1)
-              print(f'PASS: {label}')
-          replace_once('        if (!ENGINE_set_default(e, ENGINE_METHOD_ALL))', '        if (!ENGINE_set_default(e, strcmp(engine, "devcrypto") == 0\n                                ? ENGINE_METHOD_CIPHERS : ENGINE_METHOD_ALL))', 'restrict devcrypto default methods to ciphers')
-          replace_once('    EVP_CIPHER_CTX_reset(ctx);\n    if (!EVP_CipherInit(ctx, kt, NULL, NULL, enc))\n    {\n        crypto_msg(M_FATAL, "EVP cipher init #1");\n    }\n    if (!EVP_CipherInit_ex(ctx, NULL, NULL, key, NULL, enc))\n    {\n        crypto_msg(M_FATAL, "EVP cipher init #2");\n    }\n    /* make sure we used a big enough key */', '    EVP_CIPHER_CTX_reset(ctx);\n#if HAVE_OPENSSL_ENGINE\n    const bool use_devcrypto = engine_persist\n        && strcmp(ENGINE_get_id(engine_persist), "devcrypto") == 0\n        && EVP_CIPHER_nid(kt) == NID_aes_128_cbc;\n    const EVP_CIPHER *method = NULL;\n    if (use_devcrypto)\n    {\n        method = ENGINE_get_cipher(engine_persist, NID_aes_128_cbc);\n        if (!method || !EVP_CipherInit_ex(ctx, EVP_aes_128_cbc(), engine_persist,\n                                          NULL, NULL, enc))\n        {\n            crypto_msg(M_FATAL, "DevCrypto AES-128-CBC initialization failed");\n        }\n    }\n    else\n#endif\n    if (!EVP_CipherInit(ctx, kt, NULL, NULL, enc))\n    {\n        crypto_msg(M_FATAL, "EVP cipher init #1");\n    }\n    if (!EVP_CipherInit_ex(ctx, NULL, NULL, key, NULL, enc))\n    {\n        crypto_msg(M_FATAL, "EVP cipher init #2");\n    }\n#if HAVE_OPENSSL_ENGINE\n    if (use_devcrypto && EVP_CIPHER_CTX_get0_cipher(ctx) != method)\n    {\n        crypto_msg(M_FATAL, "DevCrypto AES-128-CBC backend mismatch");\n    }\n    if (EVP_CIPHER_nid(kt) == NID_aes_128_cbc)\n    {\n        msg(M_INFO, "VPN AES-128-CBC backend (%s): %s",\n            enc ? "encrypt" : "decrypt",\n            use_devcrypto && EVP_CIPHER_CTX_get0_cipher(ctx) == method\n                ? "devcrypto" : "not devcrypto");\n    }\n#endif\n    /* make sure we used a big enough key */', 'explicit AES-128-CBC engine selection and backend logging')
-          p.write_text(text)
-          diff = ''.join(difflib.unified_diff(original.splitlines(True), text.splitlines(True),
-                                              fromfile='a/crypto_openssl.c', tofile='b/crypto_openssl.c'))
-          Path('aes-build-diagnostics/openvpn-backend.diff').write_text(diff)
-          print(diff)
+          (diag / 'crypto_openssl.before.c').write_bytes(p.read_bytes())
+          print('OpenVPN source SHA256:', hashlib.sha256(p.read_bytes()).hexdigest(), flush=True)
+
+          # Locate the actual function definitions, not a multiline literal from a web page.
+          # Match braces structurally, ignoring comments and C string/character literals.
+          lex = re.compile(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|[{}]', re.S)
+          def span_of(text, name):
+              pattern = r'(?m)^[ \t]*' + re.escape(name) + r'\s*\([^;{}]*?\)\s*\{'
+              hits = list(re.finditer(pattern, text))
+              if len(hits) != 1:
+                  raise ValueError(f'{name}: expected one function definition, found {len(hits)}')
+              opening = hits[0].end() - 1
+              depth = 0
+              for m in lex.finditer(text, opening):
+                  if m.group() == '{':
+                      depth += 1
+                  elif m.group() == '}':
+                      depth -= 1
+                      if depth == 0:
+                          return opening, m.end()
+              raise ValueError(f'{name}: unmatched braces')
+
+          def unique(text, pattern, label):
+              hits = list(re.finditer(pattern, text))
+              if len(hits) != 1:
+                  raise ValueError(f'{label}: expected one semantic anchor, found {len(hits)}')
+              return hits[0]
+
+          marker = 'VPN AES-128-CBC backend'
+          try:
+              if marker in original:
+                  raise ValueError('Source already contains custom backend marker; refusing double patch')
+              a, b = span_of(original, 'setup_engine')
+              setup = original[a:b]
+              m = unique(setup, r'ENGINE_set_default\s*\(\s*e\s*,\s*ENGINE_METHOD_ALL\s*\)', 'engine default method')
+              # Do not register digest/RNG/etc. methods from devcrypto.
+              setup = setup[:m.start()] + 'ENGINE_set_default(e, strcmp(engine, "devcrypto") == 0\n                                ? ENGINE_METHOD_CIPHERS : ENGINE_METHOD_ALL)' + setup[m.end():]
+              text = original[:a] + setup + original[b:]
+              a, b = span_of(text, 'cipher_ctx_init')
+              body = text[a:b]
+              (diag / 'cipher_ctx_init.before.txt').write_text(body + '\n')
+              # Require known data types/lifetime and a reset before original initialization.
+              declaration = unique(body, r'\bevp_cipher_type\s*\*\s*kt\s*=\s*cipher_get\s*\(\s*ciphername\s*\)\s*;', 'cipher declaration')
+              reset = unique(body, r'\bEVP_CIPHER_CTX_reset\s*\(\s*ctx\s*\)\s*;', 'cipher context reset')
+              free = unique(body, r'\bEVP_CIPHER_free\s*\(\s*kt\s*\)\s*;', 'cipher reference release')
+              if not declaration.end() <= reset.start() < free.start():
+                  raise ValueError('Unexpected order of cipher declaration/reset/release')
+              # Keep upstream cipher initialization intact for every other cipher/backend.
+              # A legacy method + explicit ENGINE is necessary with OpenSSL 3 provider ciphers.
+              injection = r'''
+          #if HAVE_OPENSSL_ENGINE
+              if (engine_persist
+                  && strcmp(ENGINE_get_id(engine_persist), "devcrypto") == 0
+                  && EVP_CIPHER_nid(kt) == NID_aes_128_cbc)
+              {
+                  const EVP_CIPHER *method = ENGINE_get_cipher(engine_persist, NID_aes_128_cbc);
+                  if (!method || !EVP_CipherInit_ex(ctx, EVP_aes_128_cbc(), engine_persist,
+                                                    NULL, NULL, enc))
+                  {
+                      crypto_msg(M_FATAL, "DevCrypto AES-128-CBC initialization failed");
+                  }
+                  if (!EVP_CipherInit_ex(ctx, NULL, NULL, key, NULL, enc))
+                  {
+                      crypto_msg(M_FATAL, "DevCrypto AES-128-CBC key initialization failed");
+                  }
+                  if (EVP_CIPHER_CTX_get0_cipher(ctx) != method)
+                  {
+                      crypto_msg(M_FATAL, "DevCrypto AES-128-CBC backend mismatch");
+                  }
+                  ASSERT(EVP_CIPHER_CTX_key_length(ctx) <= EVP_CIPHER_key_length(kt));
+                  msg(M_INFO, "VPN AES-128-CBC backend (%s): devcrypto",
+                      enc ? "encrypt" : "decrypt");
+                  EVP_CIPHER_free(kt);
+                  return;
+              }
+          #endif
+          '''
+              body = body[:reset.end()] + '\n' + injection + body[reset.end():]
+              text = text[:a] + body + text[b:]
+              if text.count(marker) != 1:
+                  raise ValueError('Unexpected backend marker count after patch')
+              # Write only after ALL validations pass. Preserve original source on failure.
+              (diag / 'openvpn-backend.diff').write_text(''.join(difflib.unified_diff(
+                  original.splitlines(True), text.splitlines(True),
+                  fromfile='a/crypto_openssl.c', tofile='b/crypto_openssl.c')))
+              p.write_text(text)
+              print('PASS: restrict devcrypto default methods to ciphers', flush=True)
+              print('PASS: explicit AES-128-CBC engine selection and backend logging', flush=True)
+              print((diag / 'openvpn-backend.diff').read_text(), flush=True)
+          except ValueError as exc:
+              print(f'ERROR: {exc}', file=sys.stderr, flush=True)
+              # Even if function extraction failed, the entire actual source is in diagnostics.
+              raise SystemExit(1)
           PY_OPENVPN
           SRC=padavan-ng/trunk/user/openvpn/openvpn-2.6.15/src/openvpn/crypto_openssl.c
           grep -Fq 'VPN AES-128-CBC backend' "$SRC"
@@ -2128,15 +2211,15 @@ jobs:
           sha256sum -- *.bin > sha256sum.txt
           md5sum -- *.bin > md5sum.txt
           sha256sum -c sha256sum.txt
-          zip -q ../padavan_TL_MR3020-V3_AES_v4.zip ./*
+          zip -q ../padavan_TL_MR3020-V3_AES_v5.zip ./*
           cd ..
-          unzip -t padavan_TL_MR3020-V3_AES_v4.zip
+          unzip -t padavan_TL_MR3020-V3_AES_v5.zip
 
       - name: Upload verified firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: padavan_TL_MR3020-V3_AES_v4_${{ github.run_id }}
-          path: padavan_TL_MR3020-V3_AES_v4.zip
+          name: padavan_TL_MR3020-V3_AES_v5_${{ github.run_id }}
+          path: padavan_TL_MR3020-V3_AES_v5.zip
           if-no-files-found: error
           retention-days: 14
 
@@ -2146,6 +2229,10 @@ jobs:
           mkdir -p aes-build-diagnostics
           TRUNK="padavan-ng/trunk"
           # Keep build diagnostics, not firmware images or default credentials.
+          src="$TRUNK/user/openvpn/openvpn-2.6.15/src/openvpn/crypto_openssl.c"
+          if [ -f "$src" ]; then
+            cp "$src" aes-build-diagnostics/crypto_openssl.at-failure.c
+          fi
           if [ -f "$TRUNK/build.log" ]; then
             cp "$TRUNK/build.log" aes-build-diagnostics/build.log
           fi
