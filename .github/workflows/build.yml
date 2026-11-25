@@ -1,7 +1,7 @@
-name: Build firmware (Ultimate Fix - Early Size Check)
+name: Build firmware (TL-MR3020 V3 - AES v3 audited)
 
 permissions:
-  contents: write
+  contents: read
 
 on:
   workflow_dispatch:
@@ -12,163 +12,8 @@ on:
         default: 'TL_MR3020-V3'
         type: choice
         options:
-          # 5K
-          - 5K-W20
-          # A5-V11
-          - A5-V11_16M
-          - A5-V11_4M
-          - A5-V11_8M
-          # ASUS
-          - RP-AC56
-          - RT-AC1200
-          - RT-AC1200GU
-          - RT-AC1200HP
-          - RT-AC51U
-          - RT-AC54U
-          - RT-N10C1
-          - RT-N11P
-          - RT-N11PB1
-          - RT-N12plus
-          - RT-N13UB1
-          - RT-N14U
-          - RT-N56U
-          - RT-N56U-GE2
-          - RT-N56UB1
-          # ATEL
-          - ALR-U270
-          # BELKIN
-          - F9K1103
-          # DLINK
-          - DIR-300B1
-          - DIR-300B7
-          - DIR-320B1
-          - DIR-620A1
-          - DIR-620D1
-          - DIR-860L
-          - DIR-882
-          # GL
-          - GL-MT300A
-          - GL-MT300N
-          - GL-MT300NV2
-          # HIWIFI
-          - HC5661A
-          # KROKS
-          - KNDRT31R26
-          - KNDRT31R3
-          # LINKSYS
-          - EA-8100
-          # MQMAKER
-          - MQ-WITI-256
-          - MQ-WITI-512
-          # NEWIFI
-          - NEWIFI-D1
-          - NEWIFI-D2
-          - NEWIFI-MINI
-          - NEWIFI-Y1S
-          # NEXX
-          - WT3020A
-          - WT3020H
-          - WT3020H16M
-          # PHICOMM
-          - 256PSG1218
-          - PSG1218
-          # SAMSUNG
-          - SWR1100
-          # SERCOMM
-          - RT-S1010
-          - SMARTBOX_SPI
-          - SMBXPRONAND
-          - SMBXTURBO
-          # SNR
-          - SNR-MD1
-          - SNR-ME1
-          - SNR-W4N-M
-          - SNR-W4N-M_USB
-          # TOTOLINK
-          - A3004NS
-          # TPLINK
-          - TL_C2-V1
-          - TL_C20-V1
-          - TL_C20-V1_16M
-          - TL_C20-V4
-          - TL_C20-V5
-          - TL_C5-V4
-          - TL_C50-V1
-          - TL_C50-V3
-          - TL_C50-V4
-          - TL_EC220_G5-V2
-          - TL_MR200-V1
           - TL_MR3020-V3
-          - TL_MR3420-V5
-          - TL_WDR7300-V5
-          - TL_WR840N-V4
-          - TL_WR840N-V4_USB
-          - TL_WR840N-V5
-          - TL_WR840N-V5_RU
-          - TL_WR840N-V6
-          - TL_WR841N-V13
-          - TL_WR841N-V13_USB
-          - TL_WR841N-V14
-          - TL_WR841N-V14_8M
-          - TL_WR842N-V5
-          - TL_WR845N-V3
-          - TL_WR845N-V4
-          # TUOSHI
-          - TS7620N
-          # UBNT
-          - UBNT-ERX
-          # UNIELEC
-          - U7621-06
-          # WALL-AP
-          - WALL-AP
-          # XIAOMI-U-Boot
-          - MI-4A_100M
-          - MI-4C
-          - MI-MINI
-          - MI-R3Gv2
-          # XIAOMI
-          - MI-3
-          - MI-3C
-          - MI-3_SPI
-          - MI-4
-          - MI-MINI
-          - MI-NANO
-          - MI-R3G
-          - MI-R3G_SPI
-          - MI-R3PRO
-          - MI-R3P_SPI
-          - R2100
-          - RM-AC2100
-          # YOUHUA
-          - WR1200JS
-          # YOUKU
-          - YK-L1
-          - YK-L1C
-          # ZBT
-          - ZBT-WE1326
-          - ZBT-WE1626
-          - ZBT-WE826T2
-          - ZBT-WG3526-32
-          - ZBT-WG3526
-          - ZBT-WR8305RT
-          # ZTE
-          - ZTE_E8820S
-          # ZYXEL
-          - KN-4G3
-          - KN-4G3B
-          - KN-EXTRA
-          - KN-EXTRA2
-          - KN-GIGA3
-          - KN-LITE
-          - KN-LITE2
-          - KN-LITE3
-          - KN-LITE3B
-          - KN-OMNI
-          - KN-OMNI2
-          - KN-START2
-          - KN-ULTRA2
-          - KN-VIVA
-      
+
       language_select:
         description: "WebUI 語言設定 (Custom Language Selector)"
         required: true
@@ -201,19 +46,18 @@ on:
         type: string
         default: '{"lanip":"192.168.0.1","signaccount":"admin","signpassword":"admin","wifi2gssid":"Padavan","wifi2gpsk":"1234567890","wifi5gssid":"Padavan-5G","wifi5gpsk":"1234567890"}'
 
-  push:
-    tags:
-      - '*'
-
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 180
     container: registry.gitlab.com/hadzhioglu/padavan-ng
     defaults: { run: { shell: bash } }
     
     steps:
       - name: Checkout Workflow
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # 0. 環境初檢
       - name: Debug - Initial Environment Check
@@ -238,7 +82,7 @@ jobs:
           libmpfr-dev libncurses5-dev libogg-dev libsqlite3-dev libssl-dev libsystemd-dev \
           libtool libtool-bin libudev-dev libunbound-dev libvorbis-dev libxml2-dev locales \
           mc nano pkg-config ppp-dev python3 python3-docutils sshpass texinfo unzip uuid \
-          uuid-dev vim wget xxd zlib1g-dev jq zip
+          uuid-dev vim wget xxd zlib1g-dev jq zip squashfs-tools
           set +x
           echo "::endgroup::"
 
@@ -285,7 +129,12 @@ jobs:
           if [ "$PADAVAN_COMMIT" != "HEAD" ] && [ ! -z "$PADAVAN_COMMIT" ]; then
             git -C padavan-ng checkout "$PADAVAN_COMMIT"
           fi
-          wget -qO- "$PADAVAN_TOOLCHAIN_URL" | tar -C padavan-ng --zstd -xf -
+          wget -q -O toolchain.tzst "$PADAVAN_TOOLCHAIN_URL"
+          sha256sum toolchain.tzst > toolchain.sha256
+          tar -C padavan-ng --zstd -xf toolchain.tzst
+          rm -f toolchain.tzst
+          git -C padavan-ng rev-parse HEAD > padavan-source-commit.txt
+          test "$(cut -c1-10 padavan-source-commit.txt)" = "44e2dab65e"
           echo "::endgroup::"
 
       # 4. 生成 Config
@@ -375,42 +224,47 @@ jobs:
           keep_modules=(OPENVPN OPENSSH SFTP TCPDUMP CURL HTTPS OPENSSL_EC OPENSSL_EXE SHORTCUT_FE QOS)
 
           for kmod in "${keep_modules[@]}"; do
-            sed -i "/CONFIG_FIRMWARE_INCLUDE_${kmod}/d" "$FINAL_CONFIG"
+            sed -i -E "/^[[:space:]]*#?[[:space:]]*CONFIG_FIRMWARE_INCLUDE_${kmod}([=[:space:]]|$)/d" "$FINAL_CONFIG"
             echo "CONFIG_FIRMWARE_INCLUDE_${kmod}=y" >> "$FINAL_CONFIG"
           done
           echo "::endgroup::"
 
       # 5. 應用自定義設定 (JSON)
       - name: Apply Custom Settings
+        env:
+          CUSTOM_JSON: ${{ inputs.customization }}
         run: |
-          echo "::group::JSON Parsing & Export"
-          
-          # 檢查 JSON 格式是否有效
-          jq empty <<< '${{ inputs.customization }}' || { echo "❌ Invalid JSON"; exit 1; }
-          
-          # 1. 寫入 GITHUB_ENV，確保最後 Release 步驟可以讀取到這些變數！
-          echo '${{ inputs.customization }}' | jq -r 'to_entries[] | "\(.key)=\(.value)"' | while IFS='=' read -r k v; do
-            echo "${k^^}=$v" >> $GITHUB_ENV  
-          done
-          
-          # 2. 提取局部變數，供當前執行腳本使用
-          LANIP=$(echo '${{ inputs.customization }}' | jq -r .lanip)
-          SIGNACCOUNT=$(echo '${{ inputs.customization }}' | jq -r .signaccount)
-          SIGNPASSWORD=$(echo '${{ inputs.customization }}' | jq -r .signpassword)
-          WIFI2GSSID=$(echo '${{ inputs.customization }}' | jq -r .wifi2gssid)
-          WIFI2GPSK=$(echo '${{ inputs.customization }}' | jq -r .wifi2gpsk)
-          WIFI5GSSID=$(echo '${{ inputs.customization }}' | jq -r .wifi5gssid)
-          WIFI5GPSK=$(echo '${{ inputs.customization }}' | jq -r .wifi5gpsk)
-          
-          # 3. 執行自定義腳本 (Padavan-ng 路徑)
-          if [ -d "padavan-ng/trunk/custom/scripts" ]; then
-            cd padavan-ng
-            chmod +x trunk/custom/scripts/*.sh
-            [ ! -z "$LANIP" ] && bash trunk/custom/scripts/setip.sh "$LANIP" trunk/user/shared/defaults.h trunk/user/www/dict/CN.dict || true
-            [ ! -z "$SIGNACCOUNT" ] && bash trunk/custom/scripts/setaccount.sh "$SIGNACCOUNT" "$SIGNPASSWORD" trunk/user/shared/defaults.h || true
-            [ ! -z "$WIFI2GSSID" ] && bash trunk/custom/scripts/setwifi.sh "$WIFI2GSSID" "$WIFI2GPSK" "$WIFI5GSSID" "$WIFI5GPSK" trunk/user/shared/defaults.h || true
-          fi
-          echo "::endgroup::"
+          set -euo pipefail
+          # Values will be written into shell/C/sed templates; allow only a safe subset.
+          # Never put personal credentials into firmware artifacts.
+          python3 - <<'PY_SETTINGS'
+          import ipaddress, json, os, re
+          data = json.loads(os.environ['CUSTOM_JSON'])
+          keys = {'lanip', 'signaccount', 'signpassword', 'wifi2gssid', 'wifi2gpsk', 'wifi5gssid', 'wifi5gpsk'}
+          if not isinstance(data, dict) or set(data) != keys:
+              raise SystemExit('Invalid customization keys')
+          if any(not isinstance(v, str) or not re.fullmatch(r'[A-Za-z0-9_. -]+', v) for v in data.values()):
+              raise SystemExit('Unsupported customization characters; use simple temporary defaults')
+          ipaddress.IPv4Address(data['lanip'])
+          for name in ('wifi2gpsk', 'wifi5gpsk'):
+              if not 8 <= len(data[name]) <= 63:
+                  raise SystemExit('Invalid Wi-Fi passphrase length')
+          for name in ('wifi2gssid', 'wifi5gssid'):
+              if not 1 <= len(data[name]) <= 32:
+                  raise SystemExit('Invalid SSID length')
+          PY_SETTINGS
+          LANIP=$(jq -er .lanip <<< "$CUSTOM_JSON")
+          SIGNACCOUNT=$(jq -er .signaccount <<< "$CUSTOM_JSON")
+          SIGNPASSWORD=$(jq -er .signpassword <<< "$CUSTOM_JSON")
+          WIFI2GSSID=$(jq -er .wifi2gssid <<< "$CUSTOM_JSON")
+          WIFI2GPSK=$(jq -er .wifi2gpsk <<< "$CUSTOM_JSON")
+          WIFI5GSSID=$(jq -er .wifi5gssid <<< "$CUSTOM_JSON")
+          WIFI5GPSK=$(jq -er .wifi5gpsk <<< "$CUSTOM_JSON")
+          cd padavan-ng
+          bash trunk/custom/scripts/setip.sh "$LANIP" trunk/user/shared/defaults.h trunk/user/www/dict/CN.dict
+          bash trunk/custom/scripts/setaccount.sh "$SIGNACCOUNT" "$SIGNPASSWORD" trunk/user/shared/defaults.h
+          bash trunk/custom/scripts/setwifi.sh "$WIFI2GSSID" "$WIFI2GPSK" "$WIFI5GSSID" "$WIFI5GPSK" trunk/user/shared/defaults.h
+          unset CUSTOM_JSON SIGNPASSWORD WIFI2GPSK WIFI5GPSK
 
       # 6. 安裝 Themes
       - name: Install themes
@@ -1141,8 +995,8 @@ jobs:
               if [ ! -f "$TAR_FILE" ]; then
                   echo "⬇️ Tarball missing. Downloading official source ($NEW_VER)..."
                   # 使用官方連結下載，避免依賴 build system 的延遲
-                  wget --no-check-certificate -q -O "$TAR_FILE" "https://www.netfilter.org/projects/iptables/files/$NEW_VER.tar.xz" || \
-                  wget --no-check-certificate -q -O "$TAR_FILE" "https://www.netfilter.org/projects/iptables/files/old/$NEW_VER.tar.xz"
+                  wget -q -O "$TAR_FILE" "https://www.netfilter.org/projects/iptables/files/$NEW_VER.tar.xz" || \
+                  wget -q -O "$TAR_FILE" "https://www.netfilter.org/projects/iptables/files/old/$NEW_VER.tar.xz"
                   
                   if [ -f "$TAR_FILE" ] && [ -s "$TAR_FILE" ]; then
                        echo "✅ Download successful."
@@ -1203,7 +1057,7 @@ jobs:
           git config --global http.postBuffer 524288000
           git config --global http.lowSpeedLimit 0
           git config --global http.lowSpeedTime 999999
-          git config --global http.sslVerify false
+          git config --global http.sslVerify true
 
           # 🛠️ [核心函數] 獨立驗證邏輯 (V12.3: Awk 智慧邊界判定 + 行數防禦)
           verify_patch_integrity() {
@@ -1347,7 +1201,7 @@ jobs:
                           # [Pre-flight Check]
                           if [ $((RANDOM % 5)) -eq 0 ] || [ $i -gt 1 ]; then
                               echo "🎭 Performing Pre-flight check..."
-                              curl -k -L -s -o /dev/null \
+                              curl -f -L -sS -o /dev/null \
                                    -c "$COOKIE_FILE" -b "$COOKIE_FILE" \
                                    -H "User-Agent: $UA" -H "Referer: $LOG_URL" \
                                    "$COMMIT_URL"
@@ -1358,7 +1212,7 @@ jobs:
                           [ "$PREFLIGHT_DONE" = true ] && CUR_REFERER="$COMMIT_URL"
 
                           # 1. 嘗試 Curl
-                          if curl -k -L -s \
+                          if curl -f -L -sS \
                                   -c "$COOKIE_FILE" -b "$COOKIE_FILE" \
                                   -H "User-Agent: $UA" \
                                   -H "Accept: $ACCEPT_FILE" \
@@ -1381,7 +1235,7 @@ jobs:
                               # 2. Curl 失敗，嘗試 Wget
                               echo "⚠️ Curl failed. Switching to Wget..."
                               rm -f "$PATCH_FILENAME"
-                              if wget --no-check-certificate -q \
+                              if wget -q \
                                       --user-agent="$UA" \
                                       --header="Accept: $ACCEPT_FILE" \
                                       --header="Referer: $COMMIT_URL" \
@@ -1663,7 +1517,7 @@ jobs:
             ARP_URL="https://www.netfilter.org/pub/arptables/arptables-0.0.5.tar.gz"
             
             echo "   Downloading $ARP_URL ..."
-            wget --no-check-certificate "$ARP_URL" -O "$ARP_TAR" || exit 1
+            wget "$ARP_URL" -O "$ARP_TAR" || exit 1
             tar -xf "$ARP_TAR" || exit 1
             rm -f "$ARP_TAR"
             
@@ -1917,6 +1771,7 @@ jobs:
           test -f "$SSL_MAKE"
           test -f "$VPN_MAKE"
           test -f "$CRYPTODEV_DIR/crypto/cryptodev.h"
+          sed -i 's/--no-check-certificate//g' "$SSL_MAKE" "$VPN_MAKE"
           grep -qx 'SRC_NAME=openssl-3.0.18' "$SSL_MAKE"
           grep -qx 'SRC_NAME=openvpn-2.6.15' "$VPN_MAKE"
           grep -q '^CONFIG_FIRMWARE_INCLUDE_OPENVPN=y$' build.config
@@ -1972,11 +1827,24 @@ jobs:
           OPENSSL=/usr/bin/openssl
           HWCONF=/etc_ro/openssl-vpn-hw.cnf
 
-          # An explicit user engine is left alone; automatic mode needs no engine directive.
+          # Preserve explicit choices; only automatically enable for a CBC-capable client.
+          CLIENT_CONF=/etc/openvpn/client/client.conf
+          if [ ! -r "$CLIENT_CONF" ]; then
+              logger -t vpn-aes 'Cannot read client.conf; normal OpenVPN startup'
+              exec "$OPENVPN" "$@"
+          fi
+          if grep -Eq '^[[:space:]]*(--)?engine[[:space:]]+' "$CLIENT_CONF"; then
+              logger -t vpn-aes 'Explicit engine in client.conf; remove it to use automatic AES mode'
+              exec "$OPENVPN" "$@"
+          fi
+          if ! grep -Eq '^[[:space:]]*(--)?(data-ciphers|ncp-ciphers|data-ciphers-fallback|cipher)[[:space:]]+.*AES-128-CBC' "$CLIENT_CONF"; then
+              logger -t vpn-aes 'AES-128-CBC not configured; normal OpenVPN startup'
+              exec "$OPENVPN" "$@"
+          fi
           modprobe mtk_aes >/dev/null 2>&1 || :
           modprobe cryptodev >/dev/null 2>&1 || :
 
-          if [ ! -c /dev/crypto ] || ! grep -q '^[[:space:]]*60[[:space:]]*crypto$' /proc/misc; then
+          if [ ! -c /dev/crypto ] || ! grep -Eq '^[[:space:]]*[0-9]+[[:space:]]+crypto[[:space:]]*$' /proc/misc; then
               logger -t vpn-aes 'CryptoDev device unavailable; using normal OpenVPN startup'
               exec "$OPENVPN" "$@"
           fi
@@ -1985,23 +1853,25 @@ jobs:
           # No production secrets are used. Reject an incorrect result or round trip.
           check_cbc() (
               umask 077
-              dir=$(mktemp -d /tmp/vpn-aes.XXXXXX) || exit 1
+              dir=$(busybox mktemp -d /tmp/vpn-aes.XXXXXX) || exit 1
               trap 'rm -rf "$dir"' EXIT
               trap 'exit 1' HUP INT TERM
               key=2b7e151628aed2a6abf7158809cf4f3c
               iv=000102030405060708090a0b0c0d0e0f
-              printf '%s' '6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710' | xxd -r -p > "$dir/plain" || exit 1
-              printf '%s' '7649abac8119b246cee98e9b12e9197d5086cb9b507219ee95db113a917678b273bed6b8e3c1743b7116e69e222295163ff1caa1681fac09120eca307586e1a7' | xxd -r -p > "$dir/expected" || exit 1
+              printf '%s' '6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710' | busybox xxd -r -p > "$dir/plain" || exit 1
+              printf '%s' '7649abac8119b246cee98e9b12e9197d5086cb9b507219ee95db113a917678b273bed6b8e3c1743b7116e69e222295163ff1caa1681fac09120eca307586e1a7' | busybox xxd -r -p > "$dir/expected" || exit 1
               [ "$(wc -c < "$dir/plain")" -eq 64 ] || exit 1
               [ "$(wc -c < "$dir/expected")" -eq 64 ] || exit 1
               export OPENSSL_CONF="$HWCONF"
-              timeout -k 2 10 "$OPENSSL" engine -t -c devcrypto > "$dir/engine" 2>&1 || exit 1
+              busybox timeout -k 2 10 "$OPENSSL" engine -t -c devcrypto > "$dir/engine" 2>&1 || exit 1
               grep -q 'AES-128-CBC' "$dir/engine" || exit 1
               grep -q '\[ available \]' "$dir/engine" || exit 1
-              timeout -k 2 10 "$OPENSSL" enc -aes-128-cbc -engine devcrypto -e -nopad -K "$key" -iv "$iv" -in "$dir/plain" -out "$dir/cipher" >/dev/null 2>&1 || exit 1
-              cmp -s "$dir/cipher" "$dir/expected" || exit 1
-              timeout -k 2 10 "$OPENSSL" enc -aes-128-cbc -engine devcrypto -d -nopad -K "$key" -iv "$iv" -in "$dir/cipher" -out "$dir/decrypted" >/dev/null 2>&1 || exit 1
-              cmp -s "$dir/plain" "$dir/decrypted" || exit 1
+              busybox timeout -k 2 10 "$OPENSSL" engine -pre DUMP_INFO devcrypto > "$dir/driver" 2>&1 || exit 1
+              grep -Eq 'Cipher AES-128-CBC,.*driver=cbc-aes-mcrypto([[:space:]]|$)' "$dir/driver" || exit 1
+              busybox timeout -k 2 10 "$OPENSSL" enc -aes-128-cbc -engine devcrypto -e -nopad -K "$key" -iv "$iv" -in "$dir/plain" -out "$dir/cipher" >/dev/null 2>&1 || exit 1
+              busybox cmp -s "$dir/cipher" "$dir/expected" || exit 1
+              busybox timeout -k 2 10 "$OPENSSL" enc -aes-128-cbc -engine devcrypto -d -nopad -K "$key" -iv "$iv" -in "$dir/cipher" -out "$dir/decrypted" >/dev/null 2>&1 || exit 1
+              busybox cmp -s "$dir/plain" "$dir/decrypted" || exit 1
           )
 
           if ! check_cbc; then
@@ -2009,13 +1879,6 @@ jobs:
               exec "$OPENVPN" "$@"
           fi
 
-          # The generated client.conf is in this directory on Padavan.
-          if grep -Eq '^[[:space:]]*engine[[:space:]]+' /etc/openvpn/client/client.conf; then
-              logger -t vpn-aes 'Explicit engine in client.conf; preserving user choice'
-              # Make CBC available to an explicitly selected devcrypto engine as well.
-              export OPENSSL_CONF="$HWCONF"
-              exec "$OPENVPN" "$@"
-          fi
           logger -t vpn-aes 'DevCrypto AES-128-CBC encrypt/decrypt self-test passed; enabling engine for OpenVPN client'
           export OPENSSL_CONF="$HWCONF"
           exec "$OPENVPN" "$@" --engine devcrypto
@@ -2025,7 +1888,38 @@ jobs:
           cat > "$VPN_DIR/vpn-aes-backend.patch" <<'VPN_HW_PATCH'
           --- a/src/openvpn/crypto_openssl.c
           +++ b/src/openvpn/crypto_openssl.c
-          @@ -822,5 +822,18 @@
+          @@ -119,6 +119,7 @@
+          -        if (!ENGINE_set_default(e, ENGINE_METHOD_ALL))
+          +        if (!ENGINE_set_default(e, strcmp(engine, "devcrypto") == 0
+          +                                ? ENGINE_METHOD_CIPHERS : ENGINE_METHOD_ALL))
+                   {
+                       crypto_msg(M_FATAL,
+                                  "OpenSSL error: ENGINE_set_default failed on engine '%s'",
+                                  engine);
+                   }
+          @@ -817,10 +818,40 @@
+               EVP_CIPHER_CTX_reset(ctx);
+          +#if HAVE_OPENSSL_ENGINE
+          +    if (engine_persist && strcmp(ENGINE_get_id(engine_persist), "devcrypto") == 0
+          +        && EVP_CIPHER_nid(kt) == NID_aes_128_cbc)
+          +    {
+          +        const EVP_CIPHER *method = ENGINE_get_cipher(engine_persist, NID_aes_128_cbc);
+          +        if (!method || !EVP_CipherInit_ex(ctx, EVP_aes_128_cbc(), engine_persist,
+          +                                          NULL, NULL, enc))
+          +        {
+          +            crypto_msg(M_FATAL, "DevCrypto AES-128-CBC initialization failed");
+          +        }
+          +        if (EVP_CIPHER_CTX_get0_cipher(ctx) != method)
+          +        {
+          +            crypto_msg(M_FATAL, "DevCrypto AES-128-CBC backend mismatch");
+          +        }
+          +    }
+          +    else
+          +#endif
+               if (!EVP_CipherInit(ctx, kt, NULL, NULL, enc))
+               {
+                   crypto_msg(M_FATAL, "EVP cipher init #1");
+               }
                if (!EVP_CipherInit_ex(ctx, NULL, NULL, key, NULL, enc))
                {
                    crypto_msg(M_FATAL, "EVP cipher init #2");
@@ -2065,7 +1959,7 @@ jobs:
           s = s.replace(old, new)
           anchor = '\t$(ROMFSINST) $(SRC_NAME)/src/openvpn/openvpn /usr/sbin/openvpn\n'
           assert s.count(anchor) == 1, "OpenVPN ROMFS install anchor changed"
-          s = s.replace(anchor, anchor + '\t$(ROMFSINST) -p +x openvpn-client-hw.sh /usr/sbin/openvpn-client-hw\n' + '\t$(ROMFSINST) openssl-vpn-hw.cnf /etc_ro/openssl-vpn-hw.cnf\n')
+          s = s.replace(anchor, anchor + '\t$(ROMFSINST) -S -p 0755 openvpn-client-hw.sh /usr/sbin/openvpn-client-hw\n' + '\t$(ROMFSINST) -S -p 0644 openssl-vpn-hw.cnf /etc_ro/openssl-vpn-hw.cnf\n')
           make.write_text(s)
           PY_HW
 
@@ -2093,277 +1987,206 @@ jobs:
           VPN_SRC="$TRUNK/user/openvpn/openvpn-2.6.15"
           SSL_CFG="$SSL_SRC/include/openssl/configuration.h"
           VPN_CFG="$VPN_SRC/config.h"
-          test -f "$SSL_CFG"
-          test -f "$VPN_CFG"
-          if grep -Eq '^#[[:space:]]*define[[:space:]]+OPENSSL_NO_(ENGINE|DEVCRYPTOENG|STATIC_ENGINE)([[:space:]]|$)' "$SSL_CFG"; then
-            echo "::error::OpenSSL hardware engine support is disabled"
+          ROMFS="$TRUNK/romfs"
+          DIAG="aes-build-diagnostics"
+          mkdir -p "$DIAG"
+          exec > >(tee "$DIAG/verification.log") 2>&1
+          failures=0
+          check() {
+            local label="$1"
+            shift
+            if "$@"; then
+              printf 'PASS: %s\n' "$label"
+            else
+              printf '::error::FAIL: %s\n' "$label"
+              failures=$((failures + 1))
+            fi
+          }
+          absent() {
+            local rc=0
+            grep -Eq "$1" "$2" || rc=$?
+            [ "$rc" -eq 1 ]
+          }
+          module_present() {
+            local path
+            path=$(find "$ROMFS/lib/modules" -type f -name "$1" -print -quit) || return 1
+            [ -n "$path" ]
+          }
+          echo "=== Generated configuration ==="
+          check 'OpenSSL configuration.h exists' test -s "$SSL_CFG"
+          check 'OpenVPN config.h exists' test -s "$VPN_CFG"
+          if [ -f "$SSL_CFG" ]; then
+            cp "$SSL_CFG" "$DIAG/openssl-configuration.h.txt"
+            grep -nE 'OPENSSL_NO_.*ENGINE|OPENSSL_NO_DEVCRYPTOENG' "$SSL_CFG" || true
+            check 'OpenSSL engine, static engine and devcrypto are not disabled' absent '^[[:space:]]*#[[:space:]]*define[[:space:]]+OPENSSL_NO_(ENGINE|DEVCRYPTOENG|STATIC_ENGINE)([[:space:]]|$)' "$SSL_CFG"
+            # Report this implementation detail; check the installed library below.
+            grep -n 'OPENSSL_NO_DYNAMIC_ENGINE' "$SSL_CFG" || true
+          fi
+          if [ -f "$VPN_CFG" ]; then
+            cp "$VPN_CFG" "$DIAG/openvpn-config.h.txt"
+            grep -nE 'HAVE_OPENSSL_ENGINE|with_openssl_engine' "$VPN_CFG" || true
+            check 'OpenVPN HAVE_OPENSSL_ENGINE=1' grep -Eq '^[[:space:]]*#[[:space:]]*define[[:space:]]+HAVE_OPENSSL_ENGINE[[:space:]]+1([[:space:]]|$)' "$VPN_CFG"
+          fi
+          echo "=== Installed firmware files ==="
+          check 'OpenVPN executable' test -x "$ROMFS/usr/sbin/openvpn"
+          check 'OpenSSL executable' test -x "$ROMFS/usr/bin/openssl"
+          check 'CryptoDev kernel module' module_present cryptodev.ko
+          check 'MediaTek AES kernel module' module_present mtk_aes.ko
+          check 'Hardware VPN startup wrapper executable' test -x "$ROMFS/usr/sbin/openvpn-client-hw"
+          check 'DevCrypto configuration installed' test -s "$ROMFS/etc_ro/openssl-vpn-hw.cnf"
+          check 'DevCrypto USE_SOFTDRIVERS=1' grep -Eq '^USE_SOFTDRIVERS[[:space:]]*=[[:space:]]*1[[:space:]]*$' "$ROMFS/etc_ro/openssl-vpn-hw.cnf"
+          check 'DevCrypto limited to AES-128-CBC' grep -Eq '^CIPHERS[[:space:]]*=[[:space:]]*AES-128-CBC[[:space:]]*$' "$ROMFS/etc_ro/openssl-vpn-hw.cnf"
+          # Verify the compiled library as well as the header; no MIPS execution on the CI host.
+          check 'DevCrypto control string in installed libcrypto' grep -aFq 'USE_SOFTDRIVERS' "$ROMFS/lib/libcrypto.so.3"
+          check 'OpenVPN backend logging in source' grep -Fq 'VPN AES-128-CBC backend' "$VPN_SRC/src/openvpn/crypto_openssl.c"
+          check 'OpenVPN backend logging in compiled binary' grep -aFq 'VPN AES-128-CBC backend' "$ROMFS/usr/sbin/openvpn"
+          check 'Padavan client launch calls hardware wrapper' grep -Fq 'openvpn-client-hw' "$TRUNK/user/rc/vpn_openvpn.c"
+          check 'Hardware wrapper shell syntax' sh -n "$ROMFS/usr/sbin/openvpn-client-hw"
+          for f in "$ROMFS/usr/sbin/openvpn-client-hw" "$ROMFS/etc_ro/openssl-vpn-hw.cnf"; do
+            [ ! -f "$f" ] || cp "$f" "$DIAG/"
+          done
+          echo "=== BusyBox configuration and installed applets ==="
+          check 'BusyBox executable' test -x "$ROMFS/bin/busybox"
+          check 'OpenVPN MIPS ELF' bash -c 'readelf -h "$1" | grep -Eq "Machine:.*MIPS"' _ "$ROMFS/usr/sbin/openvpn"
+          check 'OpenSSL MIPS ELF' bash -c 'readelf -h "$1" | grep -Eq "Machine:.*MIPS"' _ "$ROMFS/usr/bin/openssl"
+          BB_CFG="$TRUNK/user/busybox/busybox-1.37.0/.config"
+          check 'Actual BusyBox build config exists' test -s "$BB_CFG"
+          if [ -f "$BB_CFG" ]; then
+            cp "$BB_CFG" "$DIAG/busybox-actual.config"
+            for app in MKTEMP CMP TIMEOUT XXD; do
+              grep -nE "^(# )?CONFIG_${app}([= ]|$)" "$BB_CFG" || true
+              check "BusyBox compiled applet $app" grep -qx "CONFIG_${app}=y" "$BB_CFG"
+            done
+          fi
+          [ ! -f "$TRUNK/configs/boards/busybox.config" ] || cp "$TRUNK/configs/boards/busybox.config" "$DIAG/busybox-board.config"
+          echo "=== Images ==="
+          if [ -d "$TRUNK/images" ]; then
+            find "$TRUNK/images" -maxdepth 1 -type f -printf '%f %s bytes\n'
+          fi
+          if [ "$failures" -ne 0 ]; then
+            echo "::error::Hardware AES verification failed: $failures check(s). See PASS/FAIL above and aes-build-diagnostics artifact."
             exit 1
           fi
-          grep -Eq '^#[[:space:]]*define[[:space:]]+OPENSSL_NO_DYNAMIC_ENGINE([[:space:]]|$)' "$SSL_CFG"
-          grep -Eq '^#[[:space:]]*define[[:space:]]+HAVE_OPENSSL_ENGINE[[:space:]]+1([[:space:]]|$)' "$VPN_CFG"
-          test -f "$TRUNK/romfs/usr/sbin/openvpn"
-          test -f "$TRUNK/romfs/usr/bin/openssl"
-          test -f "$TRUNK/romfs/lib/modules/3.4.113/kernel/drivers/crypto/cryptodev/cryptodev.ko"
-          test -n "$(find "$TRUNK/romfs/lib/modules" -name mtk_aes.ko -print -quit)"
-          test -x "$TRUNK/romfs/usr/sbin/openvpn-client-hw"
-          test -f "$TRUNK/romfs/etc_ro/openssl-vpn-hw.cnf"
-          grep -qx 'USE_SOFTDRIVERS = 1' "$TRUNK/romfs/etc_ro/openssl-vpn-hw.cnf"
-          grep -qx 'CIPHERS = AES-128-CBC' "$TRUNK/romfs/etc_ro/openssl-vpn-hw.cnf"
-          grep -Fq 'VPN AES-128-CBC backend' "$VPN_SRC/src/openvpn/crypto_openssl.c"
-          grep -aFq 'VPN AES-128-CBC backend' "$TRUNK/romfs/usr/sbin/openvpn"
-          grep -Fq 'openvpn-client-hw' "$TRUNK/user/rc/vpn_openvpn.c"
-          for app in MKTEMP CMP TIMEOUT XXD; do
-            grep -qx "CONFIG_${app}=y" "$TRUNK/configs/boards/busybox.config"
-          done
-          sh -n "$TRUNK/romfs/usr/sbin/openvpn-client-hw"
           echo "Build-time Engine and runtime integration verification passed (router tests still required)."
 
-      # 9. 智慧打包與產物偵測 (含 iptables Debug 檔案)
-      - name: Smart-Pack & Debug Collection
+      - name: Validate final TP-Link image
         run: |
-          echo "::group::Smart Packing"
-          
-          # 0. 載入編譯後的變數 (修復 Partition Check 警告)
-          if [ -f "padavan-ng/trunk/.config" ]; then
-            source "padavan-ng/trunk/.config"
-          fi
-
-          # 1. 定義絕對路徑
-          WORK_DIR=$(pwd)
-          PACK_DIR="$WORK_DIR/output_pack"
-          IMAGES_DIR="$WORK_DIR/padavan-ng/trunk/images"
-          PARTITIONS_FILE="$WORK_DIR/padavan-ng/trunk/configs/boards/$CONFIG_VENDOR/$CONFIG_FIRMWARE_PRODUCT_ID/partitions.config"
-          
-          mkdir -p "$PACK_DIR"
-          
-          # 初始化報告
-          REPORT_FILE="$PACK_DIR/file_report.txt"
-          touch "$REPORT_FILE"
-          
-          echo "Packing Artifacts to: $PACK_DIR"
-          
-          # 2. 備份關鍵配置檔
-          echo "Collecting Debug Configurations..."
-          [ -f "padavan-ng/trunk/.config" ] && cp "padavan-ng/trunk/.config" "$PACK_DIR/build.config"
-          [ -f "padavan-ng/trunk/configs/boards/busybox.config" ] && cp "padavan-ng/trunk/configs/boards/busybox.config" "$PACK_DIR/busybox.config"
-          [ -f "padavan-ng/trunk/user/shared/defaults.h" ] && cp "padavan-ng/trunk/user/shared/defaults.h" "$PACK_DIR/defaults.h.txt"
-          [ -f "padavan-ng/trunk/user/www/dict/CN.dict" ] && cp "padavan-ng/trunk/user/www/dict/CN.dict" "$PACK_DIR/CN.dict.txt"
-          [ ! -f "padavan-ng/trunk/user/www/dict/RU.dict" ] || cp "padavan-ng/trunk/user/www/dict/RU.dict" "$PACK_DIR/RU.dict.txt"
-          [ ! -f "padavan-ng/trunk/libs/libssl/3.0/openssl-3.0.18/include/openssl/configuration.h" ] || cp "padavan-ng/trunk/libs/libssl/3.0/openssl-3.0.18/include/openssl/configuration.h" "$PACK_DIR/openssl-configuration.h.txt"
-          [ ! -f "padavan-ng/trunk/user/openvpn/openvpn-2.6.15/config.h" ] || cp "padavan-ng/trunk/user/openvpn/openvpn-2.6.15/config.h" "$PACK_DIR/openvpn-config.h.txt"
-          [ -f "padavan-ng/trunk/linux-3.4.x/.config" ] && cp "padavan-ng/trunk/linux-3.4.x/.config" "$PACK_DIR/kernel.config"
-          [ -f "padavan-ng/trunk/build.log" ] && cp "padavan-ng/trunk/build.log" "$PACK_DIR/build.log"
-
-          if [ -f "padavan-ng/trunk/romfs/usr/sbin/openvpn-client-hw" ]; then
-            cp "padavan-ng/trunk/romfs/usr/sbin/openvpn-client-hw" "$PACK_DIR/openvpn-client-hw.sh"
-            cp "padavan-ng/trunk/romfs/etc_ro/openssl-vpn-hw.cnf" "$PACK_DIR/openssl-vpn-hw.cnf"
-          fi
-
-          # =======================================================
-          # 🔥 [NEW] 收集 BusyBox Patches (CVE Debug)
-          # =======================================================
-          BB_SRC_DIR="padavan-ng/trunk/user/busybox/busybox-1.37.0"
-          DEBUG_BB_DIR="$PACK_DIR/debug_busybox"
-          mkdir -p "$DEBUG_BB_DIR"
-
-          # 檢查 Phase 7 建立的 patches 目錄是否存在
-          if [ -d "$BB_SRC_DIR/patches" ]; then
-              echo "✅ Found BusyBox patches directory, collecting..."
-              cp "$BB_SRC_DIR/patches"/*.patch "$DEBUG_BB_DIR/" 2>/dev/null || true
-              echo "- 🛡️ **BusyBox Patches**: Collected in \`debug_busybox\`" >> "$REPORT_FILE"
-              
-              # 額外收集: BusyBox 的實際編譯 .config (確認 CVE 編譯選項)
-              if [ -f "$BB_SRC_DIR/.config" ]; then
-                  cp "$BB_SRC_DIR/.config" "$DEBUG_BB_DIR/busybox_actual_build.config"
-              fi
-          else
-              echo "⚠️ Warning: BusyBox patches directory not found (Phase 7 issue?)."
-              echo "- ⚠️ **BusyBox Patches**: Not found" >> "$REPORT_FILE"
-          fi
-
-          # =======================================================
-          # 🔥 強化：收集 iptables 相關產物 (智慧驗證版)
-          # =======================================================
-          IPT_SRC_DIR="padavan-ng/trunk/user/iptables/iptables-1.8.11"
-          IPT_BASE_DIR="padavan-ng/trunk/user/iptables"
-          DEBUG_DIR="$PACK_DIR/debug_iptables"
-          
-          mkdir -p "$DEBUG_DIR"
-          
-          # 2.1 收集 Patch 檔案
-          if [ -d "$IPT_BASE_DIR/patches_archive" ]; then
-              cp "$IPT_BASE_DIR/patches_archive"/*.patch "$DEBUG_DIR/"
-              echo "- 🛡️ **Patches**: All patches collected in debug_iptables" >> "$REPORT_FILE"
-          else
-              echo "⚠️ Warning: patches directory not found in $IPT_BASE_DIR"
-              echo "- ⚠️ **Patches**: Not found (Collection failed)" >> "$REPORT_FILE"
-          fi
-          
-          # 2.2 收集 Patch 過程日誌 (非常重要!)
-          if [ -f "$IPT_BASE_DIR/patch_summary.log" ]; then
-              cp "$IPT_BASE_DIR/patch_summary.log" "$DEBUG_DIR/patch_summary.log"
-              echo "- 📜 **Patch Log**: Included" >> "$REPORT_FILE"
-          fi
-
-          # 2.3 智慧複製 xtables.c (根據內容決定檔名)
-          TARGET_FILE="$IPT_SRC_DIR/libxtables/xtables.c"
-          
-          if [ -f "$TARGET_FILE" ]; then
-              # 檢查是否含有我們 Patch #100 的特徵碼 (屏蔽警告的 if 0)
-              if grep -q "#if 0" "$TARGET_FILE" && grep -q "Warning: Extension %s is not supported" "$TARGET_FILE"; then
-                  # 判定為已 Patch
-                  cp "$TARGET_FILE" "$DEBUG_DIR/xtables_patched.c"
-                  echo "✅ Detected PATCHED xtables.c - Saving as xtables_patched.c"
-                  echo "- 📄 **Source**: \`xtables_patched.c\` (✅ Patched successfully)" >> "$REPORT_FILE"
-              else
-                  # 判定為未 Patch (原版或 Patch 失敗)
-                  cp "$TARGET_FILE" "$DEBUG_DIR/xtables_original.c"
-                  echo "ℹ️ Detected UNPATCHED xtables.c - Saving as xtables_original.c"
-                  echo "- 📄 **Source**: \`xtables_original.c\` (⚠️ Original/Unpatched)" >> "$REPORT_FILE"
-              fi
-          else
-               echo "⚠️ Warning: xtables.c not found (Maybe build failed or path differs)"
-               echo "- ❌ **Source**: xtables.c not found!" >> "$REPORT_FILE"
-          fi
-          
-          # 2.4 額外收集 config.log (這對編譯失敗除錯非常有用)
-          if [ -f "$IPT_SRC_DIR/config.log" ]; then
-              cp "$IPT_SRC_DIR/config.log" "$DEBUG_DIR/config.log"
-              echo "- 🔧 **Log**: \`config.log\` included" >> "$REPORT_FILE"
-          fi
-          # =======================================================
-
-          # 3. 抓取韌體產物並立即檢查大小
-          if [ -d "$IMAGES_DIR" ]; then
-            echo "Scanning $IMAGES_DIR for images..."
-            
-            # 讀取分區上限
-            if [ -f "$PARTITIONS_FILE" ]; then
-              MAX_FW_SIZE="$(awk '/Firmware/ { getline; getline; sub(",", ""); print strtonum($2); }' "$PARTITIONS_FILE")"
-              echo "Max Firmware Size Allowed: $MAX_FW_SIZE bytes"
-            else
-              MAX_FW_SIZE=0
-              echo "::warning:: Partition config not found, skipping size check."
-            fi
-
-            # 尋找所有產物
-            find "$IMAGES_DIR" -maxdepth 1 -type f \( -name "*.trx" -o -name "*.bin" \) | while read -r file; do
-              fname=$(basename "$file")
-              fsize=$(stat -c %s "$file")
-              
-              cp -v "$file" "$PACK_DIR/"
-              
-              if (( fsize < 500000 )); then
-                echo "- 📦 **U-Boot**: \`$fname\` ($(numfmt --to=iec $fsize))" >> "$REPORT_FILE"
-              else
-                echo "- 💿 **Firmware**: \`$fname\` ($(numfmt --to=iec $fsize))" >> "$REPORT_FILE"
-                
-                if (( MAX_FW_SIZE > 0 )); then
-                  if (( fsize > MAX_FW_SIZE )); then
-                    echo "::error:: Firmware $fname ($fsize bytes) exceeds max size ($MAX_FW_SIZE bytes)!"
-                    exit 1
-                  else
-                    echo "::notice:: $fname size check passed ($fsize / $MAX_FW_SIZE)"
-                  fi
-                fi
-              fi
-            done
-          else
-            echo "::warning:: Images directory not found. Build might have failed completely."
-            echo "- ❌ **Error**: No images directory found." >> "$REPORT_FILE"
-          fi
-
-          # 4. 生成 MD5 (修復：只對檔案生成，避開資料夾)
-          cd "$PACK_DIR"
-          for f in *; do
-            if [ -f "$f" ]; then
-              md5sum "$f" >> md5sum.txt
-            fi
+          set -euo pipefail
+          mkdir -p aes-build-diagnostics
+          python3 - <<'PY_IMAGE' | tee aes-build-diagnostics/image-verification.txt
+          from pathlib import Path
+          import struct, re, hashlib
+          t = Path('padavan-ng/trunk')
+          cfg = (t / '.config').read_text()
+          def val(k):
+              m = re.search(r'^' + re.escape(k) + r'=(.*)$', cfg, re.M)
+              if not m:
+                  raise SystemExit('Missing firmware identity: ' + k)
+              return m.group(1).strip('"')
+          if val('CONFIG_VENDOR') != 'TPLINK' or val('CONFIG_FIRMWARE_PRODUCT_ID') != 'TL_MR3020-V3':
+              raise SystemExit('Wrong firmware target')
+          part = t / 'configs/boards/TPLINK/TL_MR3020-V3/partitions.config'
+          if not part.is_file():
+              raise SystemExit('Missing partition configuration')
+          m = re.search(r'name:\s*"Firmware"\s*,\s*offset:\s*(0x[0-9a-fA-F]+)\s*,\s*size:\s*(0x[0-9a-fA-F]+)', part.read_text())
+          if not m or (int(m[1], 16), int(m[2], 16)) != (0x20000, 0x780000):
+              raise SystemExit('Unexpected TL-MR3020 V3 partition layout')
+          images = list((t / 'images').glob('TL_MR3020-V3_*.bin'))
+          if len(images) != 1:
+              raise SystemExit(f'Expected one device-specific BIN, got {len(images)}')
+          p = images[0]
+          data = p.read_bytes()
+          rootfs = (t / 'images/ramdisk').read_bytes()
+          def u32(offset):
+              return struct.unpack_from('>I', data, offset)[0]
+          if not 512 < len(data) <= 0x780000:
+              raise SystemExit('Invalid firmware length')
+          # TP-Link v2/v3 header, as used by this exact board and previous working image.
+          if data[:4] != bytes.fromhex('03000000') or u32(0x34) != 0x30200003:
+              raise SystemExit('Unexpected TP-Link header or hardware ID')
+          ko, kl, ro, rl, bo, bl = (u32(i) for i in (0x74, 0x78, 0x7c, 0x80, 0x84, 0x88))
+          if ko != 512 or kl == 0 or ko + kl > ro or rl != len(rootfs) or ro + rl > len(data) or bo or bl:
+              raise SystemExit('Invalid kernel/rootfs/bootloader bounds')
+          if not rootfs.startswith(b'hsqs') or data[ro:ro+rl] != rootfs:
+              raise SystemExit('SquashFS mismatch in final flash image')
+          # mktplinkfw2 appends erased-flash padding and JFFS2 EOF markers.
+          trailer = data[ro+rl:]
+          if trailer.replace(bytes.fromhex('deadc0de'), b'').strip(b'\xff'):
+              raise SystemExit('Unexpected data after rootfs')
+          print(f'PASS: model, header, bounds and embedded rootfs: {p.name}')
+          print(f'PASS: {len(data)} / {0x780000} bytes; free {0x780000-len(data)} bytes')
+          print('SHA256:', hashlib.sha256(data).hexdigest())
+          Path('verified-image.txt').write_text(str(p) + '\n')
+          PY_IMAGE
+          TRUNK=padavan-ng/trunk
+          for f in usr/sbin/openvpn usr/bin/openssl usr/sbin/openvpn-client-hw etc_ro/openssl-vpn-hw.cnf lib/libcrypto.so.3 bin/busybox; do
+            echo "Checking packed SquashFS file: $f"
+            unsquashfs -cat "$TRUNK/images/ramdisk" "$f" | cmp - "$TRUNK/romfs/$f"
           done
-          
-          # 讀取報告供 Release 使用
-          FILE_REPORT_CONTENT=$(cat file_report.txt)
-          {
-            echo "FILE_REPORT<<EOF"
-            echo "$FILE_REPORT_CONTENT"
-            echo "EOF"
-          } >> $GITHUB_ENV
-          
-          # 找出最大的韌體檔案 (排除 uboot) 
-          MAIN_FW=$(find . -type f \( -name "*.trx" -o -name "*.bin" \) -printf "%s\t%p\n" | sort -n | tail -1 | cut -f2)
-          [ ! -z "$MAIN_FW" ] && echo "MAIN_FW_PATH=$PACK_DIR/${MAIN_FW#./}" >> $GITHUB_ENV
-          
-          cd "$WORK_DIR"
+          for module in cryptodev.ko mtk_aes.ko; do
+            f=$(find "$TRUNK/romfs/lib/modules" -type f -name "$module" -print -quit)
+            test -n "$f"
+            unsquashfs -cat "$TRUNK/images/ramdisk" "${f#"$TRUNK/romfs/"}" | cmp - "$f"
+          done
+          echo 'PASS: all required files are present in the actual compressed flash image.'
 
-          # 5. 打包 Zip
-          if [ "$(ls -A $PACK_DIR)" ]; then
-            ZIP_NAME="padavan_pack_${CONFIG_VENDOR}_${CONFIG_FIRMWARE_PRODUCT_ID}.zip"
-            zip -j -r "$ZIP_NAME" "$PACK_DIR"
-            echo "ZIP_FILE_PATH=$WORK_DIR/$ZIP_NAME" >> $GITHUB_ENV
-          else
-            echo "::error:: output_pack is empty!"
-            exit 1
-          fi
-          
-          echo "BUILD_TIMESTAMP=$(TZ='Asia/Taipei' date '+%Y.%m.%d_%H.%M.%S')" >> $GITHUB_ENV
-          echo "CONFIG_VENDOR=$CONFIG_VENDOR" >> $GITHUB_ENV
-          echo "CONFIG_FIRMWARE_PRODUCT_ID=$CONFIG_FIRMWARE_PRODUCT_ID" >> $GITHUB_ENV
-          echo "::endgroup::"
+      - name: Package verified firmware
+        run: |
+          set -euo pipefail
+          T=padavan-ng/trunk
+          mkdir -p output_pack
+          image=$(cat verified-image.txt)
+          test -s "$image"
+          cp "$image" output_pack/
+          cp "$T/.config" output_pack/build.config
+          cp "$T/linux-3.4.x/.config" output_pack/kernel.config
+          cp "$T/user/busybox/busybox-1.37.0/.config" output_pack/busybox_actual_build.config
+          cp "$T/romfs/usr/sbin/openvpn-client-hw" output_pack/openvpn-client-hw.sh
+          cp "$T/romfs/etc_ro/openssl-vpn-hw.cnf" output_pack/
+          cp padavan-source-commit.txt toolchain.sha256 output_pack/
+          printf '%s\n' "$GITHUB_SHA" > output_pack/workflow-commit.txt
+          cp aes-build-diagnostics/verification.log aes-build-diagnostics/image-verification.txt output_pack/
+          cp "$T/build.log" output_pack/build.log
+          cd output_pack
+          sha256sum -- *.bin > sha256sum.txt
+          md5sum -- *.bin > md5sum.txt
+          sha256sum -c sha256sum.txt
+          zip -q ../padavan_TL_MR3020-V3_AES_v3.zip ./*
+          cd ..
+          unzip -t padavan_TL_MR3020-V3_AES_v3.zip
 
-      - name: Upload artifacts (ZIP)
+      - name: Upload verified firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: padavan_${{ env.CONFIG_VENDOR }}_${{ env.CONFIG_FIRMWARE_PRODUCT_ID }}_${{ env.BUILD_TIMESTAMP }}
-          path: ${{ env.ZIP_FILE_PATH }}
+          name: padavan_TL_MR3020-V3_AES_v3_${{ github.run_id }}
+          path: padavan_TL_MR3020-V3_AES_v3.zip
+          if-no-files-found: error
+          retention-days: 14
 
-      # 10. 發布 Release
-      - name: Set Release Tag
-        if: github.event_name == 'workflow_dispatch'
+      - name: Collect AES failure diagnostics
+        if: failure() && inputs.target_select == 'TL_MR3020-V3'
         run: |
-          echo "TAG_NAME=${{ inputs.target_select }}-${{ env.BUILD_TIMESTAMP }}" >> $GITHUB_ENV
+          mkdir -p aes-build-diagnostics
+          TRUNK="padavan-ng/trunk"
+          # Keep build diagnostics, not firmware images or default credentials.
+          if [ -f "$TRUNK/build.log" ]; then
+            cp "$TRUNK/build.log" aes-build-diagnostics/build.log
+          fi
+          for f in "$TRUNK/libs/libssl/3.0/openssl-3.0.18/configdata.pm" "$TRUNK/user/openvpn/openvpn-2.6.15/config.log"; do
+            [ ! -f "$f" ] || cp "$f" aes-build-diagnostics/
+          done
+          if [ -d "$TRUNK/romfs" ]; then
+            find "$TRUNK/romfs" -maxdepth 7 \( -iname '*crypto*' -o -iname '*aes*' -o -iname '*openvpn*' -o -iname '*openssl*' -o -name mktemp -o -name cmp -o -name timeout -o -name xxd \) -ls > aes-build-diagnostics/romfs-files.txt
+          fi
+          if [ -d "$TRUNK/images" ]; then
+            find "$TRUNK/images" -maxdepth 1 -type f -printf '%f %s bytes\n' > aes-build-diagnostics/images.txt
+          fi
 
-      - name: Publish Release
-        if: github.event_name == 'workflow_dispatch'
-        uses: ncipollo/release-action@v1
+      - name: Upload AES failure diagnostics
+        if: failure() && inputs.target_select == 'TL_MR3020-V3'
+        uses: actions/upload-artifact@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          commit: ${{ github.sha }}
-          tag: ${{ env.TAG_NAME }}
-          name: ${{ inputs.target_select }} [${{ env.BUILD_TIMESTAMP }}]
-          body: |
-            **Padavan 編譯報告 - Build firmware (Ultimate Fix - Early Size Check)**
-            * **🇹🇼 TW641 Padavan CAKE🍰OpenWrt 25.12 Dave's Guitar🎸開源路由器韌體 與 Dave Täht數位典藏博物館🏛️**: https://TW641.github.io/
-            * **Linux Kernel**: **3.4.113**，大幅領先原廠舊核心。
-            * **專案版本**: Padavan ng CAKE Linux 3.4 (The Dave Täht Tribute Edition) - TW641 的開源專案 | TW641 Padavan CAKE 與 Dave Täht 數位典藏博物館
-            * **專案介紹**: https://TW641.github.io/padavan-ng/
-            * **🕊️ In Memory of Dave Täht**
-            * **📢 SLOGAN: "The darker the night, the brighter the Täht."**
-            * **📢 Reminder: "When you miss Dave, modprobe sch_cake!"**
-            * **效能解放**：全系列整合 CAKE 流量調度、HWNAT (硬體加速) + SFE (軟體加速)。
-            * **介面優化**：內建繁體中文，並針對 1080P 寬螢幕進行排版優化。
-            * **穩定提升**：修復 MT7610E 無線驅動斷線問題，啟用快速重連；3.4 版本採用最穩定的 iproute2-5.12.0 TC + iproute2-5.12.0 IP + Iptables 1.8.11 + 套用 Upstream Patches 與 libmnl 1.0.5 組合，新增 Arptables v0.0.5。
-            * **安全防護**：全面升級 Busybox 1.37.0，修復多個 CVE 高風險漏洞（[SECURITY] CVE-2025-60876 & CVE-2025-46394）。
-            * **padavan-builder-workflow CI YAML自動化雲端編譯韌體腳本來源**: https://github.com/TW641/padavan-builder-workflow/blob/main/.github/workflows/build.yml
-            * **padavan-builder-workflow CI YAML自動化雲端編譯韌體腳本介紹**: https://TW641.github.io/padavan-builder-workflow/
-            * **原始碼來源 Repo**: https://github.com/TW641/padavan-ng
-            * **Branch**: ${{ env.PADAVAN_BRANCH }}
-            * **Commit**: ${{ env.PADAVAN_COMMIT }}
-            * **選擇機型**: ${{ inputs.target_select }}
-            * **WebUI 語言選項 (Custom Language Select)**: ${{ env.RELEASE_LANG }}
-            * **編譯時間**: ${{ env.BUILD_TIME }} (Taipei Time)
-            * **LAN IP**: ${{ env.LANIP }}
-            * **User**: ${{ env.SIGNACCOUNT }} / **Pass**: ${{ env.SIGNPASSWORD }}
-            * **WiFi**: ${{ env.WIFI2GSSID }} / ${{ env.WIFI5GSSID }}
-            
-            ### 📦 產物偵測
-            ${{ env.FILE_REPORT }}
-            
-            ### 🛠 Debug 檔案 (已包含在 Zip)
-            * `defaults.h.txt` (檢查 IP/帳密 是否修改成功)
-            * `CN.dict.txt` (檢查語言檔)
-            * `build.log` (編譯日誌)
-            * `build.config` (編譯參數)
-            * `kernel.config` (核心參數)
-          artifacts: ${{ env.ZIP_FILE_PATH }}
-          allowUpdates: true
-          artifactErrorsFailBuild: true
+          name: aes-build-diagnostics
+          path: aes-build-diagnostics/
+          if-no-files-found: warn
+
