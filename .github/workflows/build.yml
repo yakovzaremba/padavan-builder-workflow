@@ -1,4 +1,4 @@
-name: Build firmware (TL-MR3020 V3 - AES v6.1 - CryptoDev alignment fix)
+name: Build firmware (TL-MR3020 V3 - AES v6.3 - CBC forced-copy diagnostic and fail-safe)
 
 permissions:
   contents: read
@@ -1823,65 +1823,56 @@ jobs:
           VPN_HW_CONF
           cat > "$VPN_DIR/openvpn-client-hw.sh" <<'VPN_HW_SCRIPT'
           #!/bin/sh
-          # TL-MR3020 V3: prepare cryptodev before OpenSSL initializes in OpenVPN.
-          # Do not force CBC negotiation or change existing VPN credentials/routes.
+          # v6.3 diagnostic: every invocation starts with software forced and no config engines.
           OPENVPN=/usr/sbin/openvpn
-          OPENSSL=/usr/bin/openssl
-          HWCONF=/etc_ro/openssl-vpn-hw.cnf
-
-          # Preserve explicit choices; only automatically enable for a CBC-capable client.
+          PROBE=/usr/sbin/vpn-aes-probe
           CLIENT_CONF=/etc/openvpn/client/client.conf
-          if [ ! -r "$CLIENT_CONF" ]; then
-              logger -t vpn-aes 'Cannot read client.conf; normal OpenVPN startup'
+          HWCONF=/etc_ro/openssl-vpn-hw.cnf
+          export OPENSSL_CONF=/dev/null PADAVAN_VPN_AES_SOFTWARE=1
+          unset OPENSSL_CONF_INCLUDE OPENSSL_MODULES OPENSSL_ENGINES
+          
+          # Keep OpenVPN arguments separate from the diagnostic reason.
+          reason=
+          if [ -e /tmp/vpn-aes-force-software ] || [ -e /etc/storage/vpn-aes-force-software ]; then
+              reason=forced-by-marker
+          elif [ ! -r "$CLIENT_CONF" ]; then
+              reason=client-config-unavailable
+          elif ! grep -Eq '^[[:space:]]*(--)?(data-ciphers|ncp-ciphers|data-ciphers-fallback|cipher)[[:space:]]+.*AES-128-CBC' "$CLIENT_CONF"; then
+              reason=AES-128-CBC-not-configured
+          elif [ ! -x "$PROBE" ]; then
+              reason=probe-unavailable
+          fi
+          if [ -n "$reason" ]; then
+              logger -t vpn-aes "v6.3 mode=software engine=disabled reason=$reason"
+              printf '%s\n' "software engine=disabled reason=$reason" > /tmp/vpn-aes-v6.3.mode
               exec "$OPENVPN" "$@"
           fi
-          if grep -Eq '^[[:space:]]*(--)?engine[[:space:]]+' "$CLIENT_CONF"; then
-              logger -t vpn-aes 'Explicit engine in client.conf; remove it to use automatic AES mode'
-              exec "$OPENVPN" "$@"
-          fi
-          if ! grep -Eq '^[[:space:]]*(--)?(data-ciphers|ncp-ciphers|data-ciphers-fallback|cipher)[[:space:]]+.*AES-128-CBC' "$CLIENT_CONF"; then
-              logger -t vpn-aes 'AES-128-CBC not configured; normal OpenVPN startup'
-              exec "$OPENVPN" "$@"
-          fi
+          
           modprobe mtk_aes >/dev/null 2>&1 || :
           modprobe cryptodev >/dev/null 2>&1 || :
-
-          if [ ! -c /dev/crypto ] || ! grep -Eq '^[[:space:]]*[0-9]+[[:space:]]+crypto[[:space:]]*$' /proc/misc; then
-              logger -t vpn-aes 'CryptoDev device unavailable; using normal OpenVPN startup'
+          umask 077
+          dir=$(busybox mktemp -d /tmp/vpn-aes-v63.XXXXXX) || {
+              logger -t vpn-aes 'v6.3 mode=software engine=disabled reason=mktemp-failed'
+              exec "$OPENVPN" "$@"
+          }
+          trap 'rm -rf "$dir"' EXIT
+          trap 'exit 1' HUP INT TERM
+          logger -t vpn-aes 'v6.3 self-test started: software reference, driver identity, direct ioctl, EVP reuse/padding/in-place/splits'
+          rc=0
+          busybox timeout -k 2 60 "$PROBE" --selftest > "$dir/probe.log" 2>&1 || rc=$?
+          cp "$dir/probe.log" /tmp/vpn-aes-v6.3.log
+          if [ "$rc" -ne 0 ] || ! grep -qx 'RESULT=PASS mode=devcrypto-driver-verified cases=1730' "$dir/probe.log"; then
+              logger -t vpn-aes "v6.3 mode=software engine=disabled reason=self-test-failed rc=$rc log=/tmp/vpn-aes-v6.3.log"
+              printf '%s\n' "software engine=disabled self-test-rc=$rc" > /tmp/vpn-aes-v6.3.mode
+              rm -rf "$dir"
+              trap - EXIT HUP INT TERM
               exec "$OPENVPN" "$@"
           fi
-
-          # NIST SP 800-38A F.2.1: 4-block AES-128-CBC known-answer test.
-          # No production secrets are used. Reject an incorrect result or round trip.
-          check_cbc() (
-              umask 077
-              dir=$(busybox mktemp -d /tmp/vpn-aes.XXXXXX) || exit 1
-              trap 'rm -rf "$dir"' EXIT
-              trap 'exit 1' HUP INT TERM
-              key=2b7e151628aed2a6abf7158809cf4f3c
-              iv=000102030405060708090a0b0c0d0e0f
-              printf '%s' '6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710' | busybox xxd -r -p > "$dir/plain" || exit 1
-              printf '%s' '7649abac8119b246cee98e9b12e9197d5086cb9b507219ee95db113a917678b273bed6b8e3c1743b7116e69e222295163ff1caa1681fac09120eca307586e1a7' | busybox xxd -r -p > "$dir/expected" || exit 1
-              [ "$(wc -c < "$dir/plain")" -eq 64 ] || exit 1
-              [ "$(wc -c < "$dir/expected")" -eq 64 ] || exit 1
-              export OPENSSL_CONF="$HWCONF"
-              busybox timeout -k 2 10 "$OPENSSL" engine -t -c devcrypto > "$dir/engine" 2>&1 || exit 1
-              grep -q 'AES-128-CBC' "$dir/engine" || exit 1
-              grep -q '\[ available \]' "$dir/engine" || exit 1
-              busybox timeout -k 2 10 "$OPENSSL" engine -pre DUMP_INFO devcrypto > "$dir/driver" 2>&1 || exit 1
-              grep -Eq 'Cipher AES-128-CBC,.*driver=cbc-aes-mcrypto([[:space:]]|$)' "$dir/driver" || exit 1
-              busybox timeout -k 2 10 "$OPENSSL" enc -aes-128-cbc -engine devcrypto -e -nopad -K "$key" -iv "$iv" -in "$dir/plain" -out "$dir/cipher" >/dev/null 2>&1 || exit 1
-              busybox cmp -s "$dir/cipher" "$dir/expected" || exit 1
-              busybox timeout -k 2 10 "$OPENSSL" enc -aes-128-cbc -engine devcrypto -d -nopad -K "$key" -iv "$iv" -in "$dir/cipher" -out "$dir/decrypted" >/dev/null 2>&1 || exit 1
-              busybox cmp -s "$dir/plain" "$dir/decrypted" || exit 1
-          )
-
-          if ! check_cbc; then
-              logger -t vpn-aes 'DevCrypto AES-128-CBC self-test failed; using normal OpenVPN startup'
-              exec "$OPENVPN" "$@"
-          fi
-
-          logger -t vpn-aes 'DevCrypto AES-128-CBC encrypt/decrypt self-test passed; enabling engine for OpenVPN client'
+          rm -rf "$dir"
+          trap - EXIT HUP INT TERM
+          logger -t vpn-aes 'v6.3 mode=devcrypto driver=cbc-aes-mcrypto copy=forced self-test=PASS; traffic still requires testing'
+          printf '%s\n' 'devcrypto driver=cbc-aes-mcrypto copy=forced self-test=PASS' > /tmp/vpn-aes-v6.3.mode
+          unset PADAVAN_VPN_AES_SOFTWARE
           export OPENSSL_CONF="$HWCONF"
           exec "$OPENVPN" "$@" --engine devcrypto
           VPN_HW_SCRIPT
@@ -2099,6 +2090,352 @@ jobs:
           sha256sum "$DIAG/cryptodev-main.before.c" "$DIAG/cryptodev-main.after.c" "$PATCH" | tee "$DIAG/cryptodev-source-sha256.txt"
           echo 'PASS: exact CryptoDev alignment patch applied before kernel compilation.'
 
+      - name: Prepare AES v6.3 diagnostic and software guard
+        run: |
+          set -euo pipefail
+          test "$(git -C padavan-ng rev-parse HEAD)" = 44e2dab65eb2ad78bea78a2adce7040fd8a3d22a
+          cat > aes-build-diagnostics/vpn-aes-probe.c <<'V63_PROBE'
+          #define _POSIX_C_SOURCE 200809L
+          #define OPENSSL_SUPPRESS_DEPRECATED
+          #include <openssl/evp.h>
+          #include <openssl/engine.h>
+          #include <openssl/provider.h>
+          #include <openssl/err.h>
+          #include <crypto/cryptodev.h>
+          #include <sys/ioctl.h>
+          #include <syslog.h>
+          #include <fcntl.h>
+          #include <unistd.h>
+          #include <signal.h>
+          #include <stdint.h>
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <stdarg.h>
+          #include <errno.h>
+          
+          /* Same OpenSSL, libc, ABI and cryptodev headers as the firmware. No host ABI structs. */
+          #define MAXDATA 16448
+          #define REGION (MAXDATA + 8192)
+          static unsigned char key[16], iv[16], plain[MAXDATA], reference[MAXDATA];
+          static unsigned long cases;
+          static void note(const char *fmt, ...)
+          {
+              char b[768]; va_list ap;
+              va_start(ap, fmt); vsnprintf(b, sizeof b, fmt, ap); va_end(ap);
+              puts(b); fflush(stdout); syslog(LOG_NOTICE, "%s", b);
+          }
+          static void fail(const char *why)
+          {
+              note("RESULT=FAIL case=%lu reason=%s errno=%d", cases, why, errno);
+              ERR_print_errors_fp(stdout); fflush(stdout); exit(1);
+          }
+          #define REQUIRE(x, why) do { if (!(x)) fail(why); } while (0)
+          static void expired(int sig) { (void)sig; _exit(124); }
+          struct buffer { unsigned char *base, *p; };
+          static struct buffer buffer_new(size_t offset)
+          {
+              struct buffer b;
+              REQUIRE(posix_memalign((void **)&b.base, 4096, REGION) == 0, "allocation");
+              memset(b.base, 0xa5, REGION); b.p = b.base + 4096 + offset; return b;
+          }
+          static void guard(struct buffer b, size_t n)
+          {
+              size_t i, start = (size_t)(b.p - b.base);
+              for (i = 0; i < start; ++i) REQUIRE(b.base[i] == 0xa5, "prefix canary");
+              for (i = start + n; i < REGION; ++i) REQUIRE(b.base[i] == 0xa5, "suffix canary");
+          }
+          static int crypt(EVP_CIPHER_CTX *c, const unsigned char *input, int n,
+                           unsigned char *out, const unsigned char *v, int pad, int split)
+          {
+              static const int chunks[] = {1, 15, 16, 17, 31, 255, 1024};
+              int at = 0, total = 0, got, j = 0;
+              /* Exactly the IV-only reset used by OpenVPN cipher_ctx_reset(). */
+              REQUIRE(EVP_CipherInit_ex(c, NULL, NULL, NULL, v, -1), "EVP IV reset");
+              REQUIRE(EVP_CIPHER_CTX_set_padding(c, pad), "EVP padding setup");
+              while (at < n) {
+                  int len = split ? chunks[j++ % (sizeof chunks / sizeof chunks[0])] : n;
+                  if (len > n - at) len = n - at;
+                  REQUIRE(EVP_CipherUpdate(c, out + total, &got, input + at, len), "EVP update");
+                  at += len; total += got;
+              }
+              REQUIRE(EVP_CipherFinal_ex(c, out + total, &got), "EVP final");
+              return total + got;
+          }
+          static EVP_CIPHER_CTX *context(const EVP_CIPHER *cipher, ENGINE *engine, int enc)
+          {
+              EVP_CIPHER_CTX *c = EVP_CIPHER_CTX_new();
+              REQUIRE(c != NULL, "EVP context allocation");
+              REQUIRE(EVP_CipherInit_ex(c, cipher, engine, key, iv, enc), "EVP initial setup");
+              if (engine) {
+                  REQUIRE(EVP_CIPHER_CTX_get0_cipher(c) == ENGINE_get_cipher(engine, NID_aes_128_cbc),
+                          "engine method identity");
+              } else {
+                  const OSSL_PROVIDER *p = EVP_CIPHER_get0_provider(EVP_CIPHER_CTX_get0_cipher(c));
+                  REQUIRE(EVP_CIPHER_CTX_get0_cipher(c) == cipher, "software reference method replaced");
+                  REQUIRE(p && strcmp(OSSL_PROVIDER_get0_name(p), "default") == 0,
+                          "software reference provider identity");
+              }
+              return c;
+          }
+          static void unhex(unsigned char *out, const char *s)
+          {
+              unsigned x; while (*s) { REQUIRE(sscanf(s, "%2x", &x) == 1, "hex"); *out++ = x; s += 2; }
+          }
+          static void nist(EVP_CIPHER_CTX *se, EVP_CIPHER_CTX *sd)
+          {
+              unsigned char p[64], expected[64], out[96], back[96];
+              unhex(p, "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710");
+              unhex(expected, "7649abac8119b246cee98e9b12e9197d5086cb9b507219ee95db113a917678b273bed6b8e3c1743b7116e69e222295163ff1caa1681fac09120eca307586e1a7");
+              REQUIRE(crypt(se, p, 64, out, iv, 0, 0) == 64 && !memcmp(out, expected, 64), "NIST software encrypt");
+              REQUIRE(crypt(sd, expected, 64, back, iv, 0, 1) == 64 && !memcmp(back, p, 64), "NIST software decrypt");
+              note("PASS independent software reference: NIST SP800-38A F.2.1/F.2.2 provider=default engine=none");
+          }
+          static void evp_case(EVP_CIPHER_CTX *se, EVP_CIPHER_CTX *sd,
+                               EVP_CIPHER_CTX *he, EVP_CIPHER_CTX *hd,
+                               int n, int pad, size_t offset, int layout, int round)
+          {
+              struct buffer src = buffer_new(offset), dst = buffer_new((offset + 8) % 4096);
+              unsigned char back[MAXDATA], swback[MAXDATA], v[16];
+              unsigned char *out = layout == 1 ? src.p : dst.p;
+              int i, rlen, hlen, plen, split = layout == 2;
+              ++cases;
+              for (i = 0; i < n; ++i) plain[i] = (unsigned char)(i * 37 + round * 73 + n);
+              for (i = 0; i < 16; ++i) v[i] = (unsigned char)(iv[i] ^ (cases * 13 + i + round));
+              note("CASE=%lu api=EVP len=%d padding=%d offset=%lu layout=%s round=%d IV=changed context=reused",
+                   cases, n, pad, (unsigned long)offset, layout == 1 ? "in-place" : split ? "split" : "separate", round);
+              rlen = crypt(se, plain, n, reference, v, pad, 0);
+              memcpy(src.p, plain, (size_t)n);
+              hlen = crypt(he, src.p, n, out, v, pad, split);
+              REQUIRE(hlen == rlen && !memcmp(out, reference, (size_t)rlen), "HW encrypt vs independent SW ciphertext");
+              if (layout != 1) REQUIRE(!memcmp(src.p, plain, (size_t)n), "EVP encrypt changed separate input");
+              /* HW encryption -> independently fetched software decryption. */
+              plen = crypt(sd, out, hlen, swback, v, pad, 1);
+              REQUIRE(plen == n && !memcmp(swback, plain, (size_t)n), "HW encrypt / SW decrypt");
+              guard(src, layout == 1 ? (size_t)(n + 32) : (size_t)n);
+              guard(dst, layout == 1 ? 0 : (size_t)(rlen + 32));
+              free(src.base); free(dst.base);
+              src = buffer_new(offset); dst = buffer_new((offset + 8) % 4096);
+              out = layout == 1 ? src.p : dst.p;
+              memcpy(src.p, reference, (size_t)rlen);
+              /* Independently encrypted software ciphertext -> HW decryption. */
+              plen = crypt(hd, src.p, rlen, out, v, pad, split);
+              REQUIRE(plen == n && !memcmp(out, plain, (size_t)n), "SW encrypt / HW decrypt");
+              if (layout != 1) REQUIRE(!memcmp(src.p, reference, (size_t)rlen), "EVP decrypt changed separate input");
+              guard(src, layout == 1 ? (size_t)(rlen + 32) : (size_t)rlen);
+              guard(dst, layout == 1 ? 0 : (size_t)(rlen + 32));
+              /* Check the reference decryption once more after reuse. */
+              REQUIRE(crypt(sd, reference, rlen, back, v, pad, 0) == n && !memcmp(back, plain, (size_t)n), "SW reference reuse");
+              free(src.base); free(dst.base);
+          }
+          static void direct_cases(EVP_CIPHER_CTX *se)
+          {
+              static const int sizes[] = {16, 64, 1504, 4080, 4096, 4112, 8192, 16384};
+              static const size_t offsets[] = {0, 1, 8, 15, 4095};
+              struct session_op session;
+              struct session_info_op info;
+              int fd = open("/dev/crypto", O_RDWR), n, enc, place, round;
+              size_t a, b;
+              REQUIRE(fd >= 0, "open /dev/crypto");
+              memset(&session, 0, sizeof session); session.cipher = CRYPTO_AES_CBC;
+              session.keylen = sizeof key; session.key = key;
+              REQUIRE(ioctl(fd, CIOCGSESSION, &session) == 0, "CIOCGSESSION");
+              memset(&info, 0, sizeof info); info.ses = session.ses;
+              REQUIRE(ioctl(fd, CIOCGSESSINFO, &info) == 0, "CIOCGSESSINFO");
+              info.cipher_info.cra_driver_name[sizeof info.cipher_info.cra_driver_name - 1] = 0;
+              REQUIRE(!strcmp(info.cipher_info.cra_driver_name, "cbc-aes-mcrypto") ||
+                      !strcmp(info.cipher_info.cra_driver_name, "chainiv(cbc-aes-mcrypto)"), "unexpected kernel cipher driver");
+              note("DRIVER=%s alignmask=%u flags=%u (identity checked; classification flag alone is insufficient)",
+                   info.cipher_info.cra_driver_name, info.alignmask, info.flags);
+              for (round = 0; round < 2; ++round) for (a = 0; a < sizeof sizes / sizeof sizes[0]; ++a)
+              for (b = 0; b < sizeof offsets / sizeof offsets[0]; ++b) for (place = 0; place < 2; ++place)
+              for (enc = 0; enc < 2; ++enc) {
+                  struct buffer src = buffer_new(offsets[b]), dst = buffer_new((offsets[b] + 8) % 4096);
+                  struct buffer ivbuf = buffer_new(offsets[b] % 16);
+                  struct crypt_op op; unsigned char v[16], expected_iv[16]; int i;
+                  n = sizes[a]; ++cases;
+                  for (i = 0; i < n; ++i) plain[i] = (unsigned char)(i * 43 + round * 11);
+                  for (i = 0; i < 16; ++i) v[i] = (unsigned char)(iv[i] ^ (cases + i));
+                  REQUIRE(crypt(se, plain, n, reference, v, 0, 0) == n, "direct reference length");
+                  memcpy(expected_iv, reference + n - 16, 16);
+                  memset(&op, 0, sizeof op); op.ses = session.ses;
+                  op.op = enc ? COP_ENCRYPT : COP_DECRYPT;
+                  /* No NO_ZC: prove the new kernel policy covers even aligned requests. */
+                  op.flags = COP_FLAG_WRITE_IV; op.len = (uint32_t)n;
+                  memcpy(ivbuf.p, v, 16);
+                  op.src = src.p; op.dst = place ? src.p : dst.p; op.iv = ivbuf.p;
+                  memcpy(src.p, enc ? plain : reference, (size_t)n);
+                  note("CASE=%lu api=CIOCCRYPT len=%d offset=%lu in-place=%d op=%s round=%d flags=WRITE_IV",
+                       cases, n, (unsigned long)offsets[b], place, enc ? "encrypt" : "decrypt", round);
+                  REQUIRE(ioctl(fd, CIOCCRYPT, &op) == 0, "CIOCCRYPT");
+                  REQUIRE(!memcmp(op.dst, enc ? reference : plain, (size_t)n), "direct ciphertext/plaintext mismatch");
+                  REQUIRE(!memcmp(op.iv, expected_iv, 16), "CIOCCRYPT WRITE_IV not advanced to final ciphertext block");
+                  if (!place) REQUIRE(!memcmp(src.p, enc ? plain : reference, (size_t)n), "direct changed separate input");
+                  guard(src, (size_t)n); guard(dst, place ? 0 : (size_t)n); guard(ivbuf, 16);
+                  free(src.base); free(dst.base); free(ivbuf.base);
+              }
+              REQUIRE(ioctl(fd, CIOCFSESSION, &session.ses) == 0, "CIOCFSESSION"); close(fd);
+          }
+          int main(int argc, char **argv)
+          {
+              static const int raw[] = {16,32,48,64,128,240,256,272,496,512,528,1008,1024,1040,1392,1408,1472,1488,1504,1536,2048,4080,4096,4112,8192,16384};
+              static const int padded[] = {0,1,15,16,17,31,32,63,64,65,255,511,1023,1399,1471,1500,4095,4096,4097,8193,16385};
+              static const size_t offsets[] = {0,1,8,15,4095};
+              OSSL_LIB_CTX *lib; OSSL_PROVIDER *provider; EVP_CIPHER *sw;
+              EVP_CIPHER_CTX *se, *sd, *he, *hd; ENGINE *engine = NULL;
+              size_t a, b; int round, pad, layout, swonly;
+              swonly = argc == 2 && !strcmp(argv[1], "--software-selftest");
+              if (!swonly && !(argc == 2 && !strcmp(argv[1], "--selftest"))) return 2;
+              openlog("vpn-aes-probe", LOG_PID, LOG_DAEMON); signal(SIGALRM, expired); alarm(55);
+              REQUIRE(OPENSSL_init_crypto(OPENSSL_INIT_NO_LOAD_CONFIG, NULL), "OpenSSL no-config init");
+              unhex(key, "2b7e151628aed2a6abf7158809cf4f3c"); unhex(iv, "000102030405060708090a0b0c0d0e0f");
+              lib = OSSL_LIB_CTX_new(); REQUIRE(lib, "independent library context");
+              provider = OSSL_PROVIDER_load(lib, "default"); REQUIRE(provider, "default provider");
+              sw = EVP_CIPHER_fetch(lib, "AES-128-CBC", "provider=default"); REQUIRE(sw, "independent software cipher");
+              se = context(sw, NULL, 1); sd = context(sw, NULL, 0); nist(se, sd);
+              if (!swonly) {
+                  ENGINE_load_builtin_engines(); engine = ENGINE_by_id("devcrypto"); REQUIRE(engine, "devcrypto missing");
+                  /* Kernel chainiv reports acceleration unreliably here: verify exact driver below. */
+                  REQUIRE(ENGINE_ctrl_cmd_string(engine, "USE_SOFTDRIVERS", "1", 0), "engine software policy control");
+                  REQUIRE(ENGINE_ctrl_cmd_string(engine, "CIPHERS", "AES-128-CBC", 0), "engine cipher scope");
+                  REQUIRE(ENGINE_init(engine), "engine init");
+                  direct_cases(se);
+              }
+              he = context(swonly ? sw : EVP_aes_128_cbc(), engine, 1);
+              hd = context(swonly ? sw : EVP_aes_128_cbc(), engine, 0);
+              for (round = 0; round < 2; ++round) for (pad = 0; pad < 2; ++pad) {
+                  const int *sizes = pad ? padded : raw;
+                  size_t count = pad ? sizeof padded / sizeof padded[0] : sizeof raw / sizeof raw[0];
+                  for (a = 0; a < count; ++a) for (b = 0; b < sizeof offsets / sizeof offsets[0]; ++b)
+                  for (layout = 0; layout < 3; ++layout)
+                      evp_case(se, sd, he, hd, sizes[a], pad, offsets[b], layout, round);
+              }
+              EVP_CIPHER_CTX_free(he); EVP_CIPHER_CTX_free(hd);
+              EVP_CIPHER_CTX_free(se); EVP_CIPHER_CTX_free(sd); EVP_CIPHER_free(sw);
+              OSSL_PROVIDER_unload(provider); OSSL_LIB_CTX_free(lib);
+              if (engine) { ENGINE_finish(engine); ENGINE_free(engine); }
+              alarm(0);
+              REQUIRE(cases == (swonly ? 1410UL : 1730UL), "incomplete test matrix");
+              note("RESULT=PASS mode=%s cases=%lu", swonly ? "software-only" : "devcrypto-driver-verified", cases);
+              closelog(); return 0;
+          }
+          V63_PROBE
+          cp aes-build-diagnostics/vpn-aes-probe.c padavan-ng/trunk/user/openvpn/
+          cat > aes-build-diagnostics/patch-v63.py <<'V63_PATCHER'
+          from pathlib import Path
+          import hashlib
+          import difflib
+          
+          root = Path('padavan-ng/trunk')
+          diag = Path('aes-build-diagnostics')
+          diag.mkdir(exist_ok=True)
+          
+          def once(text, old, new):
+              if text.count(old) != 1:
+                  raise SystemExit(f'Anchor must occur exactly once: {old[:120]!r}')
+              return text.replace(old, new)
+          
+          def save(p, before, after, name):
+              (diag / name).write_text(''.join(difflib.unified_diff(
+                  before.splitlines(True), after.splitlines(True),
+                  fromfile='a/' + str(p.relative_to(Path('padavan-ng'))).replace('\\', '/'),
+                  tofile='b/' + str(p.relative_to(Path('padavan-ng'))).replace('\\', '/'))), newline='\n')
+              p.write_text(after, newline='\n')
+          
+          p = root / 'linux-3.4.x/drivers/crypto/cryptodev/main.c'
+          before = p.read_text()
+          assert hashlib.sha256(p.read_bytes()).hexdigest() == '39d81417fc110b0342a16e5e855731ca860671317616e8d7fe43c3e5f15c5b57'
+          after = once(before, '\t\tif (cop->flags & COP_FLAG_NO_ZC)\n\t\t\tret = __crypto_run_std', '''\t\t/* v6.3 diagnostic: copy all AES-CBC requests, including aligned ones.
+          \t\t * Keep the v6.1 alignment fix and caller NO_ZC flags for other ciphers.
+          \t\t * This does not repair or make claims about the MediaTek DMA engine.
+          \t\t */
+          \t\tif (ses_ptr->cdata.init && !ses_ptr->cdata.aead &&
+          \t\t    !strcmp(crypto_tfm_alg_name(crypto_ablkcipher_tfm(ses_ptr->cdata.async.s)),
+          \t\t\t    "cbc(aes)"))
+          \t\t\tcop->flags |= COP_FLAG_NO_ZC;
+          
+          \t\tif (cop->flags & COP_FLAG_NO_ZC)
+          \t\t\tret = __crypto_run_std''')
+          after += '\nMODULE_INFO(aes_diagnostic, "v6.3 cbc(aes) forced-copy");\n'
+          save(p, before, after, '0002-cryptodev-aes-cbc-forced-copy.patch')
+          (diag / 'cryptodev-main.v63.c').write_text(after)
+          (diag / 'cryptodev-v63.sha256').write_text(hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + str(p).replace('\\', '/') + '\n')
+          
+          # OpenVPN is already patched by the v6.1 backend step. Guard the process, not config text.
+          # The wrapper sets this flag for every software launch, including every failure path.
+          p = root / 'user/openvpn/openvpn-2.6.15/src/openvpn/crypto_openssl.c'
+          before = p.read_text()
+          after = once(before, 'setup_engine(const char *engine)\n{\n', '''setup_engine(const char *engine)
+          {
+              if (getenv("PADAVAN_VPN_AES_SOFTWARE"))
+              {
+                  msg(M_INFO, "VPN AES v6.3 software guard: ignoring engine option");
+                  return NULL;
+              }
+          ''')
+          after = once(after, '    OPENSSL_init_crypto(OPENSSL_INIT_LOAD_CONFIG, NULL);', '''    if (getenv("PADAVAN_VPN_AES_SOFTWARE"))
+              {
+                  if (!OPENSSL_init_crypto(OPENSSL_INIT_NO_LOAD_CONFIG, NULL))
+                  {
+                      crypto_msg(M_FATAL, "VPN AES v6.3 software no-config init failed");
+                  }
+                  msg(M_INFO, "VPN AES v6.3 software guard: config engines disabled");
+              }
+              else
+              {
+                  OPENSSL_init_crypto(OPENSSL_INIT_LOAD_CONFIG, NULL);
+              }''')
+          after = once(after, '    return EVP_CIPHER_fetch(NULL, ciphername, NULL);', '''    return EVP_CIPHER_fetch(NULL, ciphername,
+                                      getenv("PADAVAN_VPN_AES_SOFTWARE") ? "provider=default" : NULL);''')
+          after = once(after, '    /* make sure we used a big enough key */\n    ASSERT(EVP_CIPHER_CTX_key_length(ctx) <= EVP_CIPHER_key_length(kt));', '''    if (getenv("PADAVAN_VPN_AES_SOFTWARE"))
+              {
+                  const EVP_CIPHER *actual = EVP_CIPHER_CTX_get0_cipher(ctx);
+                  const OSSL_PROVIDER *provider = EVP_CIPHER_get0_provider(actual);
+                  if (!provider || strcmp(OSSL_PROVIDER_get0_name(provider), "default") != 0
+                      || engine_persist != NULL)
+                  {
+                      crypto_msg(M_FATAL, "VPN AES v6.3 software backend identity failure");
+                  }
+                  if (EVP_CIPHER_nid(kt) == NID_aes_128_cbc)
+                  {
+                      msg(M_INFO, "VPN AES-128-CBC backend (%s): software provider=default engine=none",
+                          enc ? "encrypt" : "decrypt");
+                  }
+              }
+          
+              /* make sure we used a big enough key */
+              ASSERT(EVP_CIPHER_CTX_key_length(ctx) <= EVP_CIPHER_key_length(kt));''')
+          save(p, before, after, '0003-openvpn-forced-software-guard.patch')
+          
+          p = root / 'user/openvpn/Makefile'
+          before = p.read_text()
+          anchor = '\t$(ROMFSINST) $(SRC_NAME)/src/openvpn/openvpn /usr/sbin/openvpn\n'
+          after = once(before, anchor, anchor + '''\t$(CC) $(CFLAGS) -std=c99 -Wall -Wextra -Werror -I$(STAGEDIR)/include -I$(ROOTDIR)/linux-3.4.x/drivers/crypto/cryptodev vpn-aes-probe.c -L$(STAGEDIR)/lib -Wl,-rpath-link,$(STAGEDIR)/lib -lcrypto -o vpn-aes-probe
+          \t$(ROMFSINST) -S -p 0755 vpn-aes-probe /usr/sbin/vpn-aes-probe
+          ''')
+          save(p, before, after, '0004-openvpn-build-probe.patch')
+          print('PASS v6.3 exact anchors: AES-CBC forced-copy, process software guard, target probe integration')
+          V63_PATCHER
+          python3 -m py_compile aes-build-diagnostics/patch-v63.py
+          python3 aes-build-diagnostics/patch-v63.py
+          sha256sum -c aes-build-diagnostics/cryptodev-v63.sha256
+          # Run the complete EVP matrix on the CI host's software implementation too.
+          # This tests the harness; only the target router can validate mtk_aes.
+          gcc -std=c99 -O2 -Wall -Wextra -Werror \
+            -Ipadavan-ng/trunk/linux-3.4.x/drivers/crypto/cryptodev \
+            aes-build-diagnostics/vpn-aes-probe.c -lcrypto -o aes-build-diagnostics/vpn-aes-probe-host
+          timeout -k 2 60 aes-build-diagnostics/vpn-aes-probe-host --software-selftest > aes-build-diagnostics/probe-host-software.log 2>&1 || {
+            tail -50 aes-build-diagnostics/probe-host-software.log
+            exit 1
+          }
+          grep -qx 'RESULT=PASS mode=software-only cases=1410' aes-build-diagnostics/probe-host-software.log
+          sha256sum aes-build-diagnostics/vpn-aes-probe.c aes-build-diagnostics/patch-v63.py \
+            padavan-ng/trunk/user/openvpn/openvpn-client-hw.sh \
+            padavan-ng/trunk/user/openvpn/openvpn-2.6.15/src/openvpn/crypto_openssl.c \
+            padavan-ng/trunk/user/openvpn/Makefile > aes-build-diagnostics/v63-sources.sha256
+          # mtk_aes is deliberately unmodified. Reject any accidental driver edit.
+          git -C padavan-ng diff --exit-code -- trunk/linux-3.4.x/drivers/crypto/mtk_aes
+
       - name: Build firmware
         run: |
           set -euo pipefail
@@ -2106,9 +2443,9 @@ jobs:
           cd padavan-ng/trunk
           grep -Fq 'VPN AES-128-CBC backend' user/openvpn/openvpn-2.6.15/src/openvpn/crypto_openssl.c
           echo "Starting build... Logs will be saved to build.log"
-          echo "39d81417fc110b0342a16e5e855731ca860671317616e8d7fe43c3e5f15c5b57  linux-3.4.x/drivers/crypto/cryptodev/main.c" | sha256sum -c -
+          (cd ../.. && sha256sum -c aes-build-diagnostics/cryptodev-v63.sha256 && sha256sum -c aes-build-diagnostics/v63-sources.sha256)
           ./build_firmware.sh 2>&1 | tee build.log
-          echo "39d81417fc110b0342a16e5e855731ca860671317616e8d7fe43c3e5f15c5b57  linux-3.4.x/drivers/crypto/cryptodev/main.c" | sha256sum -c -
+          (cd ../.. && sha256sum -c aes-build-diagnostics/cryptodev-v63.sha256 && sha256sum -c aes-build-diagnostics/v63-sources.sha256)
           echo "::endgroup::"
 
       - name: Verify Hardware AES Build
@@ -2202,6 +2539,41 @@ jobs:
           fi
           echo "Build-time Engine and runtime integration verification passed (router tests still required)."
 
+      - name: Verify AES v6.3 probe and software fallback in packed image
+        run: |
+          set -euo pipefail
+          T=padavan-ng/trunk
+          R="$T/romfs"
+          D=aes-build-diagnostics
+          exec > >(tee "$D/v63-verification.log") 2>&1
+          test -x "$R/usr/sbin/vpn-aes-probe"
+          readelf -h "$R/usr/sbin/vpn-aes-probe" | tee "$D/vpn-aes-probe-elf.txt"
+          grep -Eq 'Machine:.*MIPS' "$D/vpn-aes-probe-elf.txt"
+          grep -Eq 'Class:.*ELF32' "$D/vpn-aes-probe-elf.txt"
+          grep -Eq 'Data:.*little endian' "$D/vpn-aes-probe-elf.txt"
+          readelf -d "$R/usr/sbin/vpn-aes-probe" | tee "$D/vpn-aes-probe-dynamic.txt"
+          grep -Fq 'libcrypto.so.3' "$D/vpn-aes-probe-dynamic.txt"
+          # This build intentionally uses the same libc/interpreter as the existing OpenVPN.
+          interp() { readelf -l "$1" | sed -n 's/.*Requesting program interpreter: \(.*\)]/\1/p'; }
+          test -n "$(interp "$R/usr/sbin/openvpn")"
+          test "$(interp "$R/usr/sbin/vpn-aes-probe")" = "$(interp "$R/usr/sbin/openvpn")"
+          grep -aFq 'RESULT=PASS mode=%s cases=%lu' "$R/usr/sbin/vpn-aes-probe"
+          grep -aFq 'PADAVAN_VPN_AES_SOFTWARE' "$R/usr/sbin/openvpn"
+          grep -aFq 'software provider=default engine=none' "$R/usr/sbin/openvpn"
+          grep -Fq 'export OPENSSL_CONF=/dev/null PADAVAN_VPN_AES_SOFTWARE=1' "$R/usr/sbin/openvpn-client-hw"
+          grep -Fq 'mode=devcrypto-driver-verified' "$R/usr/sbin/openvpn-client-hw"
+          sh -n "$R/usr/sbin/openvpn-client-hw"
+          mapfile -t mods < <(find "$R/lib/modules" -type f -name cryptodev.ko)
+          test "${#mods[@]}" -eq 1
+          test "$(modinfo -F aes_diagnostic "${mods[0]}")" = 'v6.3 cbc(aes) forced-copy'
+          for rel in usr/sbin/vpn-aes-probe usr/sbin/openvpn usr/sbin/openvpn-client-hw etc_ro/openssl-vpn-hw.cnf; do
+            unsquashfs -cat "$T/images/ramdisk" "$rel" | cmp - "$R/$rel"
+          done
+          git -C padavan-ng diff --exit-code -- trunk/linux-3.4.x/drivers/crypto/mtk_aes
+          sha256sum -c "$D/cryptodev-v63.sha256"
+          sha256sum -c "$D/v63-sources.sha256"
+          echo 'PASS v6.3: target probe, guarded software backend, forced-copy marker and packed files'
+
       - name: Validate final TP-Link image
         run: |
           set -euo pipefail
@@ -2288,7 +2660,7 @@ jobs:
               raise SystemExit('Empty kernel configuration')
           digest = hashlib.sha256(('\n'.join(sorted(entries)) + '\n').encode()).hexdigest()
           print('v5 reference kernel config SHA256:', 'c32121067da296a44a94b411bd60e90a8f4729bf8a1dac75072d80ee7081c552')
-          print('v6.1 actual kernel config SHA256:   ', digest)
+          print('v6.3 actual kernel config SHA256:   ', digest)
           if digest != 'c32121067da296a44a94b411bd60e90a8f4729bf8a1dac75072d80ee7081c552':
               raise SystemExit('Kernel configuration differs from v5; do not use this module as a drop-in replacement')
           print('PASS: normalized kernel configuration matches v5')
@@ -2333,10 +2705,15 @@ jobs:
           cp padavan-source-commit.txt toolchain.sha256 cryptodev-module/
           cp "$DIAG/cryptodev-modinfo.txt" "$DIAG/cryptodev-elf.txt" "$DIAG/cryptodev-kernel-abi.txt" "$DIAG/cryptodev-alignment.diff" "$DIAG/cryptodev-source-sha256.txt" "$DIAG/0001-cryptodev-use-copy-path-for-unaligned-buffers.patch" cryptodev-module/
           printf '%s\n' "$GITHUB_SHA" > cryptodev-module/workflow-commit.txt
-          printf '%s\n' 'Experimental v6.1 module. Keep VPN stopped, verify SHA256 and test RAM-only before flashing.' > cryptodev-module/README.txt
+          printf '%s\n' 'Experimental diagnostic v6.3 module; CBC forced-copy, mtk_aes unchanged. Keep VPN stopped, verify SHA256 and test RAM-only before flashing.' > cryptodev-module/README.txt
           (cd cryptodev-module && sha256sum cryptodev-patched.ko > sha256sum.txt && sha256sum -c sha256sum.txt)
           report "PASS: verified CryptoDev module exported: $modhash"
           cp "$LOG" "$DIAG/cryptodev-built-sha256.txt" cryptodev-module/
+          cp "$T/romfs/usr/sbin/vpn-aes-probe" cryptodev-module/
+          cp "$DIAG/0002-cryptodev-aes-cbc-forced-copy.patch" "$DIAG/0003-openvpn-forced-software-guard.patch" "$DIAG/0004-openvpn-build-probe.patch" cryptodev-module/
+          cp "$DIAG/cryptodev-v63.sha256" "$DIAG/v63-sources.sha256" "$DIAG/vpn-aes-probe.c" "$DIAG/probe-host-software.log" "$DIAG/v63-verification.log" cryptodev-module/
+          cp "$T/user/openvpn/openvpn-client-hw.sh" cryptodev-module/
+          (cd cryptodev-module && sha256sum cryptodev-patched.ko vpn-aes-probe > sha256sum.txt && sha256sum -c sha256sum.txt)
 
       - name: Package verified firmware
         run: |
@@ -2357,18 +2734,21 @@ jobs:
           cp "$T/build.log" output_pack/build.log
           cp aes-build-diagnostics/cryptodev-alignment.diff aes-build-diagnostics/cryptodev-source-sha256.txt aes-build-diagnostics/cryptodev-modinfo.txt aes-build-diagnostics/cryptodev-kernel-abi.txt aes-build-diagnostics/0001-cryptodev-use-copy-path-for-unaligned-buffers.patch output_pack/
           cp cryptodev-module/cryptodev-patched.ko cryptodev-module/cryptodev-export-verification.log cryptodev-module/cryptodev-built-sha256.txt output_pack/
+          cp padavan-ng/trunk/romfs/usr/sbin/vpn-aes-probe output_pack/
+          cp aes-build-diagnostics/0002-cryptodev-aes-cbc-forced-copy.patch aes-build-diagnostics/0003-openvpn-forced-software-guard.patch aes-build-diagnostics/0004-openvpn-build-probe.patch output_pack/
+          cp aes-build-diagnostics/probe-host-software.log aes-build-diagnostics/v63-verification.log output_pack/
           cd output_pack
-          sha256sum -- *.bin cryptodev-patched.ko > sha256sum.txt
+          sha256sum -- *.bin cryptodev-patched.ko vpn-aes-probe > sha256sum.txt
           md5sum -- *.bin > md5sum.txt
           sha256sum -c sha256sum.txt
-          zip -q ../padavan_TL_MR3020-V3_AES_v6_1.zip ./*
+          zip -q ../padavan_TL_MR3020-V3_AES_v6_3.zip ./*
           cd ..
-          unzip -t padavan_TL_MR3020-V3_AES_v6_1.zip
+          unzip -t padavan_TL_MR3020-V3_AES_v6_3.zip
 
       - name: Upload standalone CryptoDev module artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cryptodev_TL_MR3020-V3_AES_v6_1_${{ github.run_id }}
+          name: cryptodev_TL_MR3020-V3_AES_v6_3_${{ github.run_id }}
           path: cryptodev-module/
           if-no-files-found: error
           retention-days: 14
@@ -2376,8 +2756,8 @@ jobs:
       - name: Upload verified firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: padavan_TL_MR3020-V3_AES_v6_1_${{ github.run_id }}
-          path: padavan_TL_MR3020-V3_AES_v6_1.zip
+          name: padavan_TL_MR3020-V3_AES_v6_3_${{ github.run_id }}
+          path: padavan_TL_MR3020-V3_AES_v6_3.zip
           if-no-files-found: error
           retention-days: 14
 
@@ -2406,8 +2786,8 @@ jobs:
             find "$TRUNK/images" -maxdepth 1 -type f -printf '%f %s bytes\n' > aes-build-diagnostics/images.txt
           fi
 
-      - name: Upload AES failure diagnostics
-        if: failure() && inputs.target_select == 'TL_MR3020-V3'
+      - name: Upload AES build diagnostics
+        if: always() && inputs.target_select == 'TL_MR3020-V3'
         uses: actions/upload-artifact@v4
         with:
           name: aes-build-diagnostics
