@@ -1,4 +1,4 @@
-name: Build firmware (TL-MR3020 V3 - AES v3 audited)
+name: Build firmware (TL-MR3020 V3 - AES v4 - direct OpenVPN patch)
 
 permissions:
   contents: read
@@ -1885,61 +1885,6 @@ jobs:
           VPN_HW_SCRIPT
           chmod 0755 "$VPN_DIR/openvpn-client-hw.sh"
           sh -n "$VPN_DIR/openvpn-client-hw.sh"
-          cat > "$VPN_DIR/vpn-aes-backend.patch" <<'VPN_HW_PATCH'
-          --- a/src/openvpn/crypto_openssl.c
-          +++ b/src/openvpn/crypto_openssl.c
-          @@ -119,6 +119,7 @@
-          -        if (!ENGINE_set_default(e, ENGINE_METHOD_ALL))
-          +        if (!ENGINE_set_default(e, strcmp(engine, "devcrypto") == 0
-          +                                ? ENGINE_METHOD_CIPHERS : ENGINE_METHOD_ALL))
-                   {
-                       crypto_msg(M_FATAL,
-                                  "OpenSSL error: ENGINE_set_default failed on engine '%s'",
-                                  engine);
-                   }
-          @@ -817,10 +818,40 @@
-               EVP_CIPHER_CTX_reset(ctx);
-          +#if HAVE_OPENSSL_ENGINE
-          +    if (engine_persist && strcmp(ENGINE_get_id(engine_persist), "devcrypto") == 0
-          +        && EVP_CIPHER_nid(kt) == NID_aes_128_cbc)
-          +    {
-          +        const EVP_CIPHER *method = ENGINE_get_cipher(engine_persist, NID_aes_128_cbc);
-          +        if (!method || !EVP_CipherInit_ex(ctx, EVP_aes_128_cbc(), engine_persist,
-          +                                          NULL, NULL, enc))
-          +        {
-          +            crypto_msg(M_FATAL, "DevCrypto AES-128-CBC initialization failed");
-          +        }
-          +        if (EVP_CIPHER_CTX_get0_cipher(ctx) != method)
-          +        {
-          +            crypto_msg(M_FATAL, "DevCrypto AES-128-CBC backend mismatch");
-          +        }
-          +    }
-          +    else
-          +#endif
-               if (!EVP_CipherInit(ctx, kt, NULL, NULL, enc))
-               {
-                   crypto_msg(M_FATAL, "EVP cipher init #1");
-               }
-               if (!EVP_CipherInit_ex(ctx, NULL, NULL, key, NULL, enc))
-               {
-                   crypto_msg(M_FATAL, "EVP cipher init #2");
-               }
-          +#if HAVE_OPENSSL_ENGINE
-          +    if (EVP_CIPHER_nid(kt) == NID_aes_128_cbc)
-          +    {
-          +        const EVP_CIPHER *method = NULL;
-          +        if (engine_persist && strcmp(ENGINE_get_id(engine_persist), "devcrypto") == 0)
-          +        {
-          +            method = ENGINE_get_cipher(engine_persist, NID_aes_128_cbc);
-          +        }
-          +        msg(M_INFO, "VPN AES-128-CBC backend (%s): %s",
-          +            enc ? "encrypt" : "decrypt",
-          +            method && EVP_CIPHER_CTX_get0_cipher(ctx) == method ? "devcrypto" : "not devcrypto");
-          +    }
-          +#endif
-               /* make sure we used a big enough key */
-          VPN_HW_PATCH
-
           # Patch only the client launch (not OpenVPN server, mktun, or other SSL users).
           python3 - "$RC_FILE" "$VPN_MAKE" <<'PY_HW'
           from pathlib import Path
@@ -1952,29 +1897,61 @@ jobs:
           rc.write_text(s.replace(old, new))
           make = Path(sys.argv[2])
           s = make.read_text()
-          old = '\t\tpatch -d $(SRC_NAME) -p1 -i ../openvpn-orig.patch; ' + chr(92) + '\n'
-          assert s.count(old) == 1, "OpenVPN extraction anchor changed"
-          # The new patch must succeed, rather than being silently skipped.
-          new = old + '\t\tpatch -d $(SRC_NAME) -p1 -i ../vpn-aes-backend.patch || exit 1; ' + chr(92) + '\n'
-          s = s.replace(old, new)
           anchor = '\t$(ROMFSINST) $(SRC_NAME)/src/openvpn/openvpn /usr/sbin/openvpn\n'
           assert s.count(anchor) == 1, "OpenVPN ROMFS install anchor changed"
           s = s.replace(anchor, anchor + '\t$(ROMFSINST) -S -p 0755 openvpn-client-hw.sh /usr/sbin/openvpn-client-hw\n' + '\t$(ROMFSINST) -S -p 0644 openssl-vpn-hw.cnf /etc_ro/openssl-vpn-hw.cnf\n')
           make.write_text(s)
           PY_HW
 
-      # 8. 開始編譯
+      # 8. Clean first, then patch the already-vendored OpenVPN source.
+      - name: Prepare clean tree and patch OpenVPN backend
+        run: |
+          set -euo pipefail
+          mkdir -p aes-build-diagnostics
+          cp build.config padavan-ng/trunk/.config
+          (cd padavan-ng/trunk && ./clear_tree.sh) > aes-build-diagnostics/clean-tree.log 2>&1 || {
+            tail -80 aes-build-diagnostics/clean-tree.log
+            exit 1
+          }
+          rm -rf padavan-ng/trunk/tmp padavan-ng/trunk/staging
+
+          # The pinned TW641 revision tracks the extracted OpenVPN source in git.
+          # Do not put our patch inside Makefile's conditional extract_test.
+          python3 - <<'PY_OPENVPN' | tee aes-build-diagnostics/openvpn-patch.log
+          from pathlib import Path
+          import difflib
+          p = Path('padavan-ng/trunk/user/openvpn/openvpn-2.6.15/src/openvpn/crypto_openssl.c')
+          if not p.is_file():
+              raise SystemExit(f'Vendored OpenVPN source missing: {p}')
+          original = p.read_text()
+          text = original
+          def replace_once(old, new, label):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one source anchor, found {count}')
+              text = text.replace(old, new, 1)
+              print(f'PASS: {label}')
+          replace_once('        if (!ENGINE_set_default(e, ENGINE_METHOD_ALL))', '        if (!ENGINE_set_default(e, strcmp(engine, "devcrypto") == 0\n                                ? ENGINE_METHOD_CIPHERS : ENGINE_METHOD_ALL))', 'restrict devcrypto default methods to ciphers')
+          replace_once('    EVP_CIPHER_CTX_reset(ctx);\n    if (!EVP_CipherInit(ctx, kt, NULL, NULL, enc))\n    {\n        crypto_msg(M_FATAL, "EVP cipher init #1");\n    }\n    if (!EVP_CipherInit_ex(ctx, NULL, NULL, key, NULL, enc))\n    {\n        crypto_msg(M_FATAL, "EVP cipher init #2");\n    }\n    /* make sure we used a big enough key */', '    EVP_CIPHER_CTX_reset(ctx);\n#if HAVE_OPENSSL_ENGINE\n    const bool use_devcrypto = engine_persist\n        && strcmp(ENGINE_get_id(engine_persist), "devcrypto") == 0\n        && EVP_CIPHER_nid(kt) == NID_aes_128_cbc;\n    const EVP_CIPHER *method = NULL;\n    if (use_devcrypto)\n    {\n        method = ENGINE_get_cipher(engine_persist, NID_aes_128_cbc);\n        if (!method || !EVP_CipherInit_ex(ctx, EVP_aes_128_cbc(), engine_persist,\n                                          NULL, NULL, enc))\n        {\n            crypto_msg(M_FATAL, "DevCrypto AES-128-CBC initialization failed");\n        }\n    }\n    else\n#endif\n    if (!EVP_CipherInit(ctx, kt, NULL, NULL, enc))\n    {\n        crypto_msg(M_FATAL, "EVP cipher init #1");\n    }\n    if (!EVP_CipherInit_ex(ctx, NULL, NULL, key, NULL, enc))\n    {\n        crypto_msg(M_FATAL, "EVP cipher init #2");\n    }\n#if HAVE_OPENSSL_ENGINE\n    if (use_devcrypto && EVP_CIPHER_CTX_get0_cipher(ctx) != method)\n    {\n        crypto_msg(M_FATAL, "DevCrypto AES-128-CBC backend mismatch");\n    }\n    if (EVP_CIPHER_nid(kt) == NID_aes_128_cbc)\n    {\n        msg(M_INFO, "VPN AES-128-CBC backend (%s): %s",\n            enc ? "encrypt" : "decrypt",\n            use_devcrypto && EVP_CIPHER_CTX_get0_cipher(ctx) == method\n                ? "devcrypto" : "not devcrypto");\n    }\n#endif\n    /* make sure we used a big enough key */', 'explicit AES-128-CBC engine selection and backend logging')
+          p.write_text(text)
+          diff = ''.join(difflib.unified_diff(original.splitlines(True), text.splitlines(True),
+                                              fromfile='a/crypto_openssl.c', tofile='b/crypto_openssl.c'))
+          Path('aes-build-diagnostics/openvpn-backend.diff').write_text(diff)
+          print(diff)
+          PY_OPENVPN
+          SRC=padavan-ng/trunk/user/openvpn/openvpn-2.6.15/src/openvpn/crypto_openssl.c
+          grep -Fq 'VPN AES-128-CBC backend' "$SRC"
+          grep -Fq 'EVP_CIPHER_CTX_get0_cipher(ctx) != method' "$SRC"
+          echo 'PASS: OpenVPN backend patch applied before compilation.'
+
       - name: Build firmware
         run: |
+          set -euo pipefail
           echo "::group::Build Process"
-          cp build.config padavan-ng/trunk/.config
           cd padavan-ng/trunk
-          
-          ./clear_tree.sh > /dev/null 2>&1
-          rm -rf tmp staging
-          
+          grep -Fq 'VPN AES-128-CBC backend' user/openvpn/openvpn-2.6.15/src/openvpn/crypto_openssl.c
           echo "Starting build... Logs will be saved to build.log"
-          set -o pipefail
           ./build_firmware.sh 2>&1 | tee build.log
           echo "::endgroup::"
 
@@ -2145,21 +2122,21 @@ jobs:
           cp "$T/romfs/etc_ro/openssl-vpn-hw.cnf" output_pack/
           cp padavan-source-commit.txt toolchain.sha256 output_pack/
           printf '%s\n' "$GITHUB_SHA" > output_pack/workflow-commit.txt
-          cp aes-build-diagnostics/verification.log aes-build-diagnostics/image-verification.txt output_pack/
+          cp aes-build-diagnostics/verification.log aes-build-diagnostics/image-verification.txt aes-build-diagnostics/openvpn-patch.log aes-build-diagnostics/openvpn-backend.diff output_pack/
           cp "$T/build.log" output_pack/build.log
           cd output_pack
           sha256sum -- *.bin > sha256sum.txt
           md5sum -- *.bin > md5sum.txt
           sha256sum -c sha256sum.txt
-          zip -q ../padavan_TL_MR3020-V3_AES_v3.zip ./*
+          zip -q ../padavan_TL_MR3020-V3_AES_v4.zip ./*
           cd ..
-          unzip -t padavan_TL_MR3020-V3_AES_v3.zip
+          unzip -t padavan_TL_MR3020-V3_AES_v4.zip
 
       - name: Upload verified firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: padavan_TL_MR3020-V3_AES_v3_${{ github.run_id }}
-          path: padavan_TL_MR3020-V3_AES_v3.zip
+          name: padavan_TL_MR3020-V3_AES_v4_${{ github.run_id }}
+          path: padavan_TL_MR3020-V3_AES_v4.zip
           if-no-files-found: error
           retention-days: 14
 
