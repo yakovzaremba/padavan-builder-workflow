@@ -1,4 +1,4 @@
-name: Build firmware (TL-MR3020 V3 - AES v6.3 - CBC forced-copy diagnostic and fail-safe)
+name: Build firmware (TL-MR3020 V3 - AES v6.3.1 - MediaTek CBC IV chaining in CryptoDev)
 
 permissions:
   contents: read
@@ -2436,6 +2436,294 @@ jobs:
           # mtk_aes is deliberately unmodified. Reject any accidental driver edit.
           git -C padavan-ng diff --exit-code -- trunk/linux-3.4.x/drivers/crypto/mtk_aes
 
+      - name: Fix and regression test MediaTek CBC IV in CryptoDev
+        run: |
+          set -euo pipefail
+          D=aes-build-diagnostics
+          sha256sum -c "$D/cryptodev-v63.sha256"
+          cat > "$D/patch-v631-iv.py" <<'PY_V631_IV'
+          from pathlib import Path
+          import difflib
+          import hashlib
+          
+          path = Path('trunk/linux-3.4.x/drivers/crypto/cryptodev/main.c')
+          source = Path('padavan-ng') / path
+          diagnostics = Path('aes-build-diagnostics')
+          
+          
+          def replace_once(text, anchor, replacement):
+              if text.count(anchor) != 1:
+                  raise SystemExit(f'Unexpected CryptoDev source anchor: {anchor!r}')
+              return text.replace(anchor, replacement, 1)
+          
+          
+          def copy_function(text):
+              start = text.index('static int\n__crypto_run_std(')
+              end = text.index('\n}\n', start) + len('\n}\n')
+              return text[start:end]
+          
+          
+          original = source.read_bytes()
+          expected = '412cc2f243c0a2a5cf9b91a12f60484ffe609b9cd3accb2233db855067dfe810'
+          if hashlib.sha256(original).hexdigest() != expected:
+              raise SystemExit('CryptoDev input differs from the RAM-tested v6.3 source')
+          before = original.decode('ascii')
+          copy_before = copy_function(before)
+          copy_after = replace_once(copy_before, '''\tsize_t nbytes, bufsize;
+          \tint ret = 0;
+          
+          \tnbytes = cop->len;''', '''\tsize_t nbytes, bufsize;
+          \tu8 saved_ciphertext[AES_BLOCK_SIZE];
+          \tbool update_mtk_iv = false;
+          \tint ret = 0;
+          
+          \tif (ses_ptr->cdata.init && !ses_ptr->cdata.aead &&
+          \t    ses_ptr->cdata.blocksize == AES_BLOCK_SIZE &&
+          \t    ses_ptr->cdata.ivsize == AES_BLOCK_SIZE) {
+          \t\tstruct crypto_tfm *tfm = crypto_ablkcipher_tfm(ses_ptr->cdata.async.s);
+          \t\tconst char *driver = crypto_tfm_alg_driver_name(tfm);
+          
+          \t\tupdate_mtk_iv = !strcmp(driver, "cbc-aes-mcrypto") ||
+          \t\t\t\t!strcmp(driver, "chainiv(cbc-aes-mcrypto)");
+          \t}
+          
+          \tnbytes = cop->len;''')
+          copy_after = replace_once(copy_after, '''\t\tsize_t current_len = nbytes > bufsize ? bufsize : nbytes;
+          
+          \t\tif (unlikely(copy_from_user(data, src, current_len))) {''', '''\t\tsize_t current_len = nbytes > bufsize ? bufsize : nbytes;
+          \t\tu8 *last_block = NULL;
+          
+          \t\tif (update_mtk_iv) {
+          \t\t\tif (unlikely(current_len < AES_BLOCK_SIZE ||
+          \t\t\t\t     current_len % AES_BLOCK_SIZE)) {
+          \t\t\t\tret = -EINVAL;
+          \t\t\t\tbreak;
+          \t\t\t}
+          \t\t\tlast_block = (u8 *)data + current_len - AES_BLOCK_SIZE;
+          \t\t}
+          
+          \t\tif (unlikely(copy_from_user(data, src, current_len))) {''')
+          copy_after = replace_once(copy_after, '''\t\tsg_init_one(&sg, data, current_len);''', '''\t\t/* Decryption overwrites the ciphertext in this bounce buffer. */
+          \t\tif (last_block && cop->op == COP_DECRYPT)
+          \t\t\tmemcpy(saved_ciphertext, last_block, AES_BLOCK_SIZE);
+          
+          \t\tsg_init_one(&sg, data, current_len);''')
+          copy_after = replace_once(copy_after, '''\t\tif (ses_ptr->cdata.init != 0) {''', '''\t\t/* MediaTek consumes the IV without returning the final CBC block.
+          \t\t * Advance it for the next page even when WRITE_IV is absent.
+          \t\t * crypto_run() and the ioctl's WRITE_IV gate handle writeback.
+          \t\t */
+          \t\tif (last_block)
+          \t\t\tcryptodev_cipher_set_iv(&ses_ptr->cdata,
+          \t\t\t\tcop->op == COP_DECRYPT ? saved_ciphertext : last_block,
+          \t\t\t\tAES_BLOCK_SIZE);
+          
+          \t\tif (ses_ptr->cdata.init != 0) {''')
+          after = replace_once(before, copy_before, copy_after)
+          after = replace_once(after, '#include <crypto/hash.h>\n', '#include <crypto/aes.h>\n#include <crypto/hash.h>\n')
+          after = replace_once(after, 'MODULE_INFO(aes_diagnostic, "v6.3 cbc(aes) forced-copy");',
+                               'MODULE_INFO(aes_diagnostic, "v6.3.1 cbc(aes) forced-copy with mtk IV chaining");')
+          patch = ''.join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
+                                             fromfile=f'a/{path.as_posix()}', tofile=f'b/{path.as_posix()}'))
+          (diagnostics / '0005-cryptodev-mtk-cbc-iv.patch').write_text(patch, encoding='ascii', newline='\n')
+          (diagnostics / 'cryptodev-copy-v63.inc').write_text(copy_before, encoding='ascii', newline='\n')
+          (diagnostics / 'cryptodev-copy-v631.inc').write_text(copy_after, encoding='ascii', newline='\n')
+          digest = hashlib.sha256(after.encode('ascii')).hexdigest()
+          if digest != '9281695dfd18a2946c874951013170501fe5912cbd67b402a02f360a8a97304a':
+              raise SystemExit('Unexpected CryptoDev v6.3.1 result hash')
+          (diagnostics / 'cryptodev-v631.sha256').write_text(f'{digest}  {source.as_posix()}\n', encoding='ascii', newline='\n')
+          print(f'Expected CryptoDev v6.3.1 SHA256: {digest}')
+          PY_V631_IV
+          cat > "$D/cryptodev-iv-regression.c" <<'V631_REGRESSION'
+          /* Host regression. The real CryptoDev copy function is injected at build time.
+           * The stand-in MediaTek backend uses OpenSSL for data and deliberately leaves IV stale.
+           */
+          #include <openssl/evp.h>
+          #include <stdbool.h>
+          #include <stdint.h>
+          #include <errno.h>
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          
+          #define PAGE_SIZE 4096
+          #define AES_BLOCK_SIZE 16
+          #define COP_ENCRYPT 0
+          #define COP_DECRYPT 1
+          #define MAXIMUM (4 * PAGE_SIZE)
+          #define __user
+          #define GFP_KERNEL 0
+          #define unlikely(value) (value)
+          #define derr(...) ((void)0)
+          
+          typedef unsigned char u8;
+          struct crypto_tfm { const char *driver; };
+          struct scatterlist { char *data; size_t len; };
+          struct cipher_data {
+              int init, aead, blocksize, ivsize;
+              struct { struct crypto_tfm *s; u8 iv[AES_BLOCK_SIZE]; } async;
+          };
+          struct csession { struct cipher_data cdata; };
+          struct crypt_op { char *src, *dst; size_t len; int op; };
+          static EVP_CIPHER *software_cipher;
+          static const u8 key[AES_BLOCK_SIZE] = {0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6,
+                                               0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c};
+          static const u8 starting_iv[AES_BLOCK_SIZE] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+          static bool backend_error;
+          static bool source_fault;
+          
+          static void check(bool condition, const char *failure)
+          {
+              if (!condition) {
+                  fprintf(stderr, "FAIL %s\n", failure);
+                  exit(1);
+              }
+          }
+          
+          static unsigned long __get_free_page(int flags) { (void)flags; return (unsigned long)(uintptr_t)malloc(PAGE_SIZE); }
+          static void free_page(unsigned long page) { free((void *)(uintptr_t)page); }
+          static int copy_from_user(void *out, const void *in, size_t len)
+          {
+              if (source_fault)
+                  return 1;
+              memcpy(out, in, len);
+              return 0;
+          }
+          static int copy_to_user(void *out, const void *in, size_t len) { memcpy(out, in, len); return 0; }
+          static void sg_init_one(struct scatterlist *sg, char *data, size_t len) { sg->data = data; sg->len = len; }
+          #ifndef BASELINE_V63
+          static struct crypto_tfm *crypto_ablkcipher_tfm(struct crypto_tfm *tfm) { return tfm; }
+          static const char *crypto_tfm_alg_driver_name(struct crypto_tfm *tfm) { return tfm->driver; }
+          static void cryptodev_cipher_set_iv(struct cipher_data *cipher, void *iv, size_t len)
+          {
+              memcpy(cipher->async.iv, iv, len);
+          }
+          #endif
+          
+          static void cbc(int encrypt, const u8 *iv, const u8 *in, u8 *out, size_t length)
+          {
+              EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+              u8 final[AES_BLOCK_SIZE];
+              int output_len, final_len;
+          
+              check(ctx && EVP_CipherInit_ex(ctx, software_cipher, NULL, key, iv, encrypt)
+                    && EVP_CIPHER_CTX_set_padding(ctx, 0)
+                    && EVP_CipherUpdate(ctx, out, &output_len, in, (int)length)
+                    && EVP_CipherFinal_ex(ctx, final, &final_len)
+                    && output_len == (int)length && final_len == 0, "OpenSSL reference");
+              EVP_CIPHER_CTX_free(ctx);
+          }
+          
+          static int hash_n_crypt(struct csession *session, struct crypt_op *op, struct scatterlist *src,
+                                 struct scatterlist *dst, size_t len)
+          {
+              check(src == dst && src->len == len && len <= PAGE_SIZE, "bounce buffer layout");
+              if (backend_error)
+                  return -EIO;
+              cbc(op->op == COP_ENCRYPT, session->cdata.async.iv, (const u8 *)src->data, (u8 *)dst->data, len);
+              return 0;
+          }
+          
+          #ifdef BASELINE_V63
+          #include "cryptodev-copy-v63.inc"
+          #else
+          #include "cryptodev-copy-v631.inc"
+          #endif
+          
+          static void run_case(const char *driver, size_t len, int encrypt, bool in_place, size_t offset, bool expect_iv)
+          {
+              struct crypto_tfm transform = {driver};
+              struct csession session = {{1, 0, AES_BLOCK_SIZE, AES_BLOCK_SIZE, {&transform, {0}}}};
+              u8 plain[MAXIMUM], ciphertext[MAXIMUM], input[MAXIMUM + 16], separate[MAXIMUM + 16];
+              u8 *src = input + offset;
+              u8 *dst = in_place ? src : separate + offset;
+              struct crypt_op op = {(char *)src, (char *)dst, len, encrypt ? COP_ENCRYPT : COP_DECRYPT};
+              size_t j;
+          
+              for (j = 0; j < len; ++j)
+                  plain[j] = (u8)((j * 43u + (j >> 8) * 37u + len) & 255u);
+              /* Reference encrypts the whole message without any page split. */
+              cbc(1, starting_iv, plain, ciphertext, len);
+              memcpy(src, encrypt ? plain : ciphertext, len);
+              memcpy(session.cdata.async.iv, starting_iv, AES_BLOCK_SIZE);
+              check(__crypto_run_std(&session, &op) == 0, "CryptoDev copy return");
+              check(!memcmp(dst, encrypt ? ciphertext : plain, len), "CIOCCRYPT data across page boundaries");
+              if (!in_place)
+                  check(!memcmp(src, encrypt ? plain : ciphertext, len), "separate input changed");
+              check(!memcmp(session.cdata.async.iv, expect_iv ? ciphertext + len - AES_BLOCK_SIZE : starting_iv,
+                            AES_BLOCK_SIZE), "CBC IV writeback did not match final ciphertext block");
+          }
+          
+          static void check_errors(void)
+          {
+              struct crypto_tfm transform = {"cbc-aes-mcrypto"};
+              struct csession session = {{1, 0, AES_BLOCK_SIZE, AES_BLOCK_SIZE, {&transform, {0}}}};
+              char source[AES_BLOCK_SIZE] = {0};
+              char empty[AES_BLOCK_SIZE] = {0};
+              char output[AES_BLOCK_SIZE] = {0};
+              struct crypt_op op = {source, output, AES_BLOCK_SIZE, COP_DECRYPT};
+          
+              memcpy(session.cdata.async.iv, starting_iv, AES_BLOCK_SIZE);
+              source_fault = true;
+              check(__crypto_run_std(&session, &op) == -EFAULT, "failed input copy");
+              source_fault = false;
+              backend_error = true;
+              check(__crypto_run_std(&session, &op) == -EIO, "failed backend return");
+              backend_error = false;
+              op.len = AES_BLOCK_SIZE - 1;
+              check(__crypto_run_std(&session, &op) == -EINVAL, "short CBC block");
+              check(!memcmp(session.cdata.async.iv, starting_iv, AES_BLOCK_SIZE) && !memcmp(output, empty, AES_BLOCK_SIZE),
+                    "error unexpectedly changed IV or copied output");
+          }
+          
+          int main(void)
+          {
+              static const size_t lengths[] = {16, 64, 4080, 4096, 4112, 8192, 8208, MAXIMUM};
+              static const size_t offsets[] = {0, 1, 8, 15};
+              static const char *drivers[] = {"cbc-aes-mcrypto", "chainiv(cbc-aes-mcrypto)"};
+              size_t driver, length, offset, cases = 0;
+              int encrypt, in_place;
+          
+              software_cipher = EVP_CIPHER_fetch(NULL, "AES-128-CBC", "provider=default");
+              check(software_cipher != NULL, "software reference is unavailable");
+              /* Mirror the first failing router case. On the v6.3 preimage, only this assertion must fail. */
+              run_case(drivers[0], 16, 0, false, 0, true);
+              for (driver = 0; driver < sizeof(drivers) / sizeof(drivers[0]); ++driver)
+                  for (length = 0; length < sizeof(lengths) / sizeof(lengths[0]); ++length)
+                      for (offset = 0; offset < sizeof(offsets) / sizeof(offsets[0]); ++offset)
+                          for (encrypt = 0; encrypt <= 1; ++encrypt)
+                              for (in_place = 0; in_place <= 1; ++in_place) {
+                                  run_case(drivers[driver], lengths[length], encrypt, in_place, offsets[offset], true);
+                                  ++cases;
+                              }
+              run_case("cbc-aes-generic", 16, 0, false, 0, false);
+              run_case("cbc-aes-generic", 16, 1, false, 0, false);
+              check_errors();
+              EVP_CIPHER_free(software_cipher);
+              printf("PASS CBC IV regression: %zu matrix cases, reference case, unaffected driver and error paths\n", cases);
+              return 0;
+          }
+          V631_REGRESSION
+          python3 "$D/patch-v631-iv.py"
+          patch="$PWD/$D/0005-cryptodev-mtk-cbc-iv.patch"
+          git -C padavan-ng apply --check "$patch"
+          git -C padavan-ng apply "$patch"
+          git -C padavan-ng apply --reverse --check "$patch"
+          sha256sum -c "$D/cryptodev-v631.sha256"
+
+          # The extracted v6.3 function must fail on the same one-block IV check.
+          # The corrected function must pass with a backend that leaves the IV stale.
+          gcc -std=gnu89 -O2 -Wall -Wextra -Werror -DBASELINE_V63 \
+            "$D/cryptodev-iv-regression.c" -lcrypto -o "$D/iv-regression-v63"
+          rc=0
+          "$D/iv-regression-v63" > "$D/iv-regression-v63.log" 2>&1 || rc=$?
+          cat "$D/iv-regression-v63.log"
+          test "$rc" -eq 1
+          grep -qx 'FAIL CBC IV writeback did not match final ciphertext block' "$D/iv-regression-v63.log"
+          gcc -std=gnu89 -O2 -Wall -Wextra -Werror \
+            "$D/cryptodev-iv-regression.c" -lcrypto -o "$D/iv-regression-v631"
+          "$D/iv-regression-v631" | tee "$D/iv-regression-v631.log"
+          grep -q '^PASS CBC IV regression: 256 matrix cases' "$D/iv-regression-v631.log"
+
       - name: Build firmware
         run: |
           set -euo pipefail
@@ -2443,9 +2731,9 @@ jobs:
           cd padavan-ng/trunk
           grep -Fq 'VPN AES-128-CBC backend' user/openvpn/openvpn-2.6.15/src/openvpn/crypto_openssl.c
           echo "Starting build... Logs will be saved to build.log"
-          (cd ../.. && sha256sum -c aes-build-diagnostics/cryptodev-v63.sha256 && sha256sum -c aes-build-diagnostics/v63-sources.sha256)
+          (cd ../.. && sha256sum -c aes-build-diagnostics/cryptodev-v631.sha256 && sha256sum -c aes-build-diagnostics/v63-sources.sha256)
           ./build_firmware.sh 2>&1 | tee build.log
-          (cd ../.. && sha256sum -c aes-build-diagnostics/cryptodev-v63.sha256 && sha256sum -c aes-build-diagnostics/v63-sources.sha256)
+          (cd ../.. && sha256sum -c aes-build-diagnostics/cryptodev-v631.sha256 && sha256sum -c aes-build-diagnostics/v63-sources.sha256)
           echo "::endgroup::"
 
       - name: Verify Hardware AES Build
@@ -2539,7 +2827,7 @@ jobs:
           fi
           echo "Build-time Engine and runtime integration verification passed (router tests still required)."
 
-      - name: Verify AES v6.3 probe and software fallback in packed image
+      - name: Verify AES v6.3.1 probe and software fallback in packed image
         run: |
           set -euo pipefail
           T=padavan-ng/trunk
@@ -2565,14 +2853,14 @@ jobs:
           sh -n "$R/usr/sbin/openvpn-client-hw"
           mapfile -t mods < <(find "$R/lib/modules" -type f -name cryptodev.ko)
           test "${#mods[@]}" -eq 1
-          test "$(modinfo -F aes_diagnostic "${mods[0]}")" = 'v6.3 cbc(aes) forced-copy'
+          test "$(modinfo -F aes_diagnostic "${mods[0]}")" = 'v6.3.1 cbc(aes) forced-copy with mtk IV chaining'
           for rel in usr/sbin/vpn-aes-probe usr/sbin/openvpn usr/sbin/openvpn-client-hw etc_ro/openssl-vpn-hw.cnf; do
             unsquashfs -cat "$T/images/ramdisk" "$rel" | cmp - "$R/$rel"
           done
           git -C padavan-ng diff --exit-code -- trunk/linux-3.4.x/drivers/crypto/mtk_aes
-          sha256sum -c "$D/cryptodev-v63.sha256"
+          sha256sum -c "$D/cryptodev-v631.sha256"
           sha256sum -c "$D/v63-sources.sha256"
-          echo 'PASS v6.3: target probe, guarded software backend, forced-copy marker and packed files'
+          echo 'PASS v6.3.1: target probe, guarded software backend, CBC IV module marker and packed files'
 
       - name: Validate final TP-Link image
         run: |
@@ -2660,7 +2948,7 @@ jobs:
               raise SystemExit('Empty kernel configuration')
           digest = hashlib.sha256(('\n'.join(sorted(entries)) + '\n').encode()).hexdigest()
           print('v5 reference kernel config SHA256:', 'c32121067da296a44a94b411bd60e90a8f4729bf8a1dac75072d80ee7081c552')
-          print('v6.3 actual kernel config SHA256:   ', digest)
+          print('v6.3.1 actual kernel config SHA256:   ', digest)
           if digest != 'c32121067da296a44a94b411bd60e90a8f4729bf8a1dac75072d80ee7081c552':
               raise SystemExit('Kernel configuration differs from v5; do not use this module as a drop-in replacement')
           print('PASS: normalized kernel configuration matches v5')
@@ -2705,7 +2993,7 @@ jobs:
           cp padavan-source-commit.txt toolchain.sha256 cryptodev-module/
           cp "$DIAG/cryptodev-modinfo.txt" "$DIAG/cryptodev-elf.txt" "$DIAG/cryptodev-kernel-abi.txt" "$DIAG/cryptodev-alignment.diff" "$DIAG/cryptodev-source-sha256.txt" "$DIAG/0001-cryptodev-use-copy-path-for-unaligned-buffers.patch" cryptodev-module/
           printf '%s\n' "$GITHUB_SHA" > cryptodev-module/workflow-commit.txt
-          printf '%s\n' 'Experimental diagnostic v6.3 module; CBC forced-copy, mtk_aes unchanged. Keep VPN stopped, verify SHA256 and test RAM-only before flashing.' > cryptodev-module/README.txt
+          printf '%s\n' 'Diagnostic v6.3.1 module with CBC IV chaining in the CryptoDev copy path. Keep VPN stopped, verify SHA256 and test RAM-only before flashing.' > cryptodev-module/README.txt
           (cd cryptodev-module && sha256sum cryptodev-patched.ko > sha256sum.txt && sha256sum -c sha256sum.txt)
           report "PASS: verified CryptoDev module exported: $modhash"
           cp "$LOG" "$DIAG/cryptodev-built-sha256.txt" cryptodev-module/
@@ -2713,6 +3001,7 @@ jobs:
           cp "$DIAG/0002-cryptodev-aes-cbc-forced-copy.patch" "$DIAG/0003-openvpn-forced-software-guard.patch" "$DIAG/0004-openvpn-build-probe.patch" cryptodev-module/
           cp "$DIAG/cryptodev-v63.sha256" "$DIAG/v63-sources.sha256" "$DIAG/vpn-aes-probe.c" "$DIAG/probe-host-software.log" "$DIAG/v63-verification.log" cryptodev-module/
           cp "$T/user/openvpn/openvpn-client-hw.sh" cryptodev-module/
+          cp "$DIAG/0005-cryptodev-mtk-cbc-iv.patch" "$DIAG/cryptodev-v631.sha256" "$DIAG/iv-regression-v63.log" "$DIAG/iv-regression-v631.log" cryptodev-module/
           (cd cryptodev-module && sha256sum cryptodev-patched.ko vpn-aes-probe > sha256sum.txt && sha256sum -c sha256sum.txt)
 
       - name: Package verified firmware
@@ -2737,18 +3026,19 @@ jobs:
           cp padavan-ng/trunk/romfs/usr/sbin/vpn-aes-probe output_pack/
           cp aes-build-diagnostics/0002-cryptodev-aes-cbc-forced-copy.patch aes-build-diagnostics/0003-openvpn-forced-software-guard.patch aes-build-diagnostics/0004-openvpn-build-probe.patch output_pack/
           cp aes-build-diagnostics/probe-host-software.log aes-build-diagnostics/v63-verification.log output_pack/
+          cp aes-build-diagnostics/0005-cryptodev-mtk-cbc-iv.patch aes-build-diagnostics/cryptodev-v631.sha256 aes-build-diagnostics/iv-regression-v631.log output_pack/
           cd output_pack
           sha256sum -- *.bin cryptodev-patched.ko vpn-aes-probe > sha256sum.txt
           md5sum -- *.bin > md5sum.txt
           sha256sum -c sha256sum.txt
-          zip -q ../padavan_TL_MR3020-V3_AES_v6_3.zip ./*
+          zip -q ../padavan_TL_MR3020-V3_AES_v6_3_1.zip ./*
           cd ..
-          unzip -t padavan_TL_MR3020-V3_AES_v6_3.zip
+          unzip -t padavan_TL_MR3020-V3_AES_v6_3_1.zip
 
       - name: Upload standalone CryptoDev module artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cryptodev_TL_MR3020-V3_AES_v6_3_${{ github.run_id }}
+          name: cryptodev_TL_MR3020-V3_AES_v6_3_1_${{ github.run_id }}
           path: cryptodev-module/
           if-no-files-found: error
           retention-days: 14
@@ -2756,8 +3046,8 @@ jobs:
       - name: Upload verified firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: padavan_TL_MR3020-V3_AES_v6_3_${{ github.run_id }}
-          path: padavan_TL_MR3020-V3_AES_v6_3.zip
+          name: padavan_TL_MR3020-V3_AES_v6_3_1_${{ github.run_id }}
+          path: padavan_TL_MR3020-V3_AES_v6_3_1.zip
           if-no-files-found: error
           retention-days: 14
 
